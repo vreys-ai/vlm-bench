@@ -1,0 +1,29 @@
+defaults:
+  - model: base
+  - eval: smoke
+  - _self_
+
+run_name: ${model.name}-${eval.name}-${now:%Y%m%d-%H%M%S}
+output_dir: outputs
+seed: 42
+
+# Path to a previously written baseline.json. When set and model.name != "base",
+# the runner computes the composite retention score against it.
+baseline_path: null
+
+wandb:
+  project: llm-bench-cc
+  entity: null
+  mode: online      # online | offline | disabled
+  tags: []
+
+carbon:
+  enabled: true
+  country_iso_code: null   # auto-detect via CodeCarbon
+  measure_power_secs: 5
+
+hydra:
+  run:
+    dir: ${output_dir}/${run_name}
+  job:
+    chdir: false

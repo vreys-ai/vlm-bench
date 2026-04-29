@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from datasets import load_dataset
+
+from ..metrics import anls
+from .base import Prediction, Sample, Task
+
+
+class DocVQATask(Task):
+    name = "docvqa"
+    primary_metric = "anls"
+
+    def load(self, n, seed, ds_cfg):
+        kwargs = {}
+        if getattr(ds_cfg, "subset", None):
+            kwargs["name"] = ds_cfg.subset
+        ds = load_dataset(ds_cfg.hf_id, split=ds_cfg.split, **kwargs)
+        ds = ds.shuffle(seed=seed).select(range(min(n, len(ds))))
+        out: list[Sample] = []
+        for i, row in enumerate(ds):
+            img = row.get("image")
+            q = row.get("question")
+            answers = row.get("answers") or row.get("answer")
+            if isinstance(answers, str):
+                answers = [answers]
+            if not answers or img is None or not q:
+                continue
+            sid = str(row.get("questionId") or row.get("question_id") or row.get("id") or i)
+            out.append(Sample(
+                sample_id=sid,
+                image=img.convert("RGB"),
+                prompt=q,
+                references=[str(a) for a in answers if a],
+            ))
+        return out
+
+    def score(self, samples, preds):
+        return {"anls": anls(self._refs_map(samples), self._hyps_map(preds))}

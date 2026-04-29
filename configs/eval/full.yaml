@@ -1,0 +1,28 @@
+name: full
+samples_per_task: 200
+seed: 42
+
+tasks:
+  - caption
+  - ocr
+  - docvqa
+  - vqa
+  - chart
+
+datasets:
+  caption:
+    hf_id: nlphuji/coco_captions
+    split: test
+  ocr:
+    hf_id: lmms-lab/OCRBench
+    split: test
+  docvqa:
+    hf_id: lmms-lab/DocVQA
+    subset: DocVQA
+    split: validation
+  vqa:
+    hf_id: lmms-lab/VQAv2
+    split: validation
+  chart:
+    hf_id: lmms-lab/ChartQA
+    split: test
