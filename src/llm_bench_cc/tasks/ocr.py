@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datasets import load_dataset
-
 from ..metrics import anls
 from .base import Prediction, Sample, Task
 
@@ -17,8 +15,7 @@ class OCRTask(Task):
     DEFAULT_PROMPT = "Answer the question based on the text shown in the image."
 
     def load(self, n, seed, ds_cfg):
-        ds = load_dataset(ds_cfg.hf_id, split=ds_cfg.split)
-        ds = ds.shuffle(seed=seed).select(range(min(n, len(ds))))
+        ds = self._load_split(ds_cfg, n, seed)
         out: list[Sample] = []
         for i, row in enumerate(ds):
             img = row.get("image")

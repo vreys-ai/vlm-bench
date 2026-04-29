@@ -48,3 +48,14 @@ class Task(ABC):
     @staticmethod
     def _hyps_map(preds: list[Prediction]) -> dict[str, str]:
         return {p.sample_id: p.prediction for p in preds}
+
+    @staticmethod
+    def _load_split(ds_cfg: Any, n: int, seed: int):
+        """Centralized loader: handles optional `name` (HF dataset config) and shuffles to N."""
+        from datasets import load_dataset
+        kwargs: dict[str, Any] = {}
+        cfg_name = getattr(ds_cfg, "name", None) or getattr(ds_cfg, "subset", None)
+        if cfg_name:
+            kwargs["name"] = cfg_name
+        ds = load_dataset(ds_cfg.hf_id, split=ds_cfg.split, **kwargs)
+        return ds.shuffle(seed=seed).select(range(min(n, len(ds))))

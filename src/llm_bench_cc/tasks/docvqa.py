@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datasets import load_dataset
-
 from ..metrics import anls
 from .base import Prediction, Sample, Task
 
@@ -11,11 +9,7 @@ class DocVQATask(Task):
     primary_metric = "anls"
 
     def load(self, n, seed, ds_cfg):
-        kwargs = {}
-        if getattr(ds_cfg, "subset", None):
-            kwargs["name"] = ds_cfg.subset
-        ds = load_dataset(ds_cfg.hf_id, split=ds_cfg.split, **kwargs)
-        ds = ds.shuffle(seed=seed).select(range(min(n, len(ds))))
+        ds = self._load_split(ds_cfg, n, seed)
         out: list[Sample] = []
         for i, row in enumerate(ds):
             img = row.get("image")

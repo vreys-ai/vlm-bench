@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datasets import load_dataset
-
 from ..metrics import bleu4
 from .base import Prediction, Sample, Task
 
@@ -12,8 +10,7 @@ class CaptionTask(Task):
     PROMPT = "Describe this image in one short sentence."
 
     def load(self, n, seed, ds_cfg):
-        ds = load_dataset(ds_cfg.hf_id, split=ds_cfg.split)
-        ds = ds.shuffle(seed=seed).select(range(min(n, len(ds))))
+        ds = self._load_split(ds_cfg, n, seed)
         out: list[Sample] = []
         for i, row in enumerate(ds):
             img = row.get("image")
@@ -21,20 +18,28 @@ class CaptionTask(Task):
                 row.get("caption")
                 or row.get("captions")
                 or row.get("sentences")
+                or row.get("answer")        # lmms-lab/COCO-Caption stores refs here
                 or row.get("references")
             )
             if isinstance(refs, str):
                 refs = [refs]
             if isinstance(refs, list) and refs and isinstance(refs[0], dict):
                 refs = [r.get("raw") or r.get("caption") or r.get("text") for r in refs]
-            if not refs:
+            refs = [r for r in (refs or []) if r and r != "None"]
+            if not refs or img is None:
                 continue
-            sid = str(row.get("cocoid") or row.get("imgid") or row.get("id") or i)
+            sid = str(
+                row.get("cocoid")
+                or row.get("question_id")   # lmms-lab/COCO-Caption uses filename as id
+                or row.get("imgid")
+                or row.get("id")
+                or i
+            )
             out.append(Sample(
                 sample_id=sid,
                 image=img.convert("RGB"),
                 prompt=self.PROMPT,
-                references=[r for r in refs if r],
+                references=refs,
             ))
         return out
 
