@@ -11,3 +11,8 @@ datasets:
   ocr:
     hf_id: echo840/OCRBench
     split: test
+
+# Per-task generation overrides on top of model.generation. Trims KV-cache memory.
+generation_overrides:
+  ocr:
+    max_new_tokens: 64

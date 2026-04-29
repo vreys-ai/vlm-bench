@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 from omegaconf import DictConfig, OmegaConf
+from PIL import Image
 from tqdm import tqdm
 
 from .composite import composite_score, retention_ratios
@@ -20,12 +21,25 @@ from .tracking import CarbonTracker, WandbRun
 logger = logging.getLogger(__name__)
 
 
+def _maybe_resize(image: Image.Image, max_side: int | None) -> Image.Image:
+    if not max_side:
+        return image
+    w, h = image.size
+    longest = max(w, h)
+    if longest <= max_side:
+        return image
+    scale = max_side / longest
+    return image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+
+
 def _generate_one(
     loaded: LoadedModel,
     image,
     prompt: str,
     gen_kwargs: dict[str, Any],
+    image_max_side: int | None,
 ) -> tuple[str, float]:
+    image = _maybe_resize(image, image_max_side)
     messages = [{
         "role": "user",
         "content": [
@@ -56,7 +70,7 @@ def _generate_one(
     return text, elapsed_ms
 
 
-def _run_task(loaded, task_name, ds_cfg, n, seed, gen_kwargs, out_dir, carbon_cfg, run_name):
+def _run_task(loaded, task_name, ds_cfg, n, seed, gen_kwargs, out_dir, carbon_cfg, run_name, runtime_cfg):
     task = get_task(task_name)
     samples: list[Sample] = task.load(n=n, seed=seed, ds_cfg=ds_cfg)
     if not samples:
@@ -73,13 +87,18 @@ def _run_task(loaded, task_name, ds_cfg, n, seed, gen_kwargs, out_dir, carbon_cf
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
+    image_max_side = runtime_cfg.get("image_max_side", None)
+    empty_cache = bool(runtime_cfg.get("empty_cache_between_samples", False))
+
     carbon.start()
     preds: list[Prediction] = []
     latencies: list[float] = []
     for s in tqdm(samples, desc=task_name, leave=False):
-        text, ms = _generate_one(loaded, s.image, s.prompt, gen_kwargs)
+        text, ms = _generate_one(loaded, s.image, s.prompt, gen_kwargs, image_max_side)
         preds.append(Prediction(sample_id=s.sample_id, prediction=text, latency_ms=ms))
         latencies.append(ms)
+        if empty_cache and torch.cuda.is_available():
+            torch.cuda.empty_cache()
     emissions = carbon.stop()
 
     peak_vram_gb = (
@@ -124,27 +143,32 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
     logger.info("Loading model %s (dtype=%s)", cfg.model.hf_id, cfg.model.dtype)
     loaded = load_model(cfg.model)
 
-    gen_kwargs = dict(
+    base_gen_kwargs = dict(
         max_new_tokens=cfg.model.generation.max_new_tokens,
         do_sample=cfg.model.generation.do_sample,
         temperature=cfg.model.generation.temperature,
     )
+    all_overrides = cfg.eval.get("generation_overrides") or {}
+    runtime_cfg = cfg.get("runtime") or OmegaConf.create({})
 
     all_metrics: dict[str, Any] = {}
     pred_paths: list[Path] = []
 
     for task_name in cfg.eval.tasks:
         ds_cfg = cfg.eval.datasets[task_name]
+        task_overrides = all_overrides.get(task_name) or {}
+        task_gen_kwargs = {**base_gen_kwargs, **dict(task_overrides)}
         result = _run_task(
             loaded=loaded,
             task_name=task_name,
             ds_cfg=ds_cfg,
             n=cfg.eval.samples_per_task,
             seed=cfg.eval.seed,
-            gen_kwargs=gen_kwargs,
+            gen_kwargs=task_gen_kwargs,
             out_dir=out_dir,
             carbon_cfg=cfg.carbon,
             run_name=cfg.run_name,
+            runtime_cfg=runtime_cfg,
         )
         if result is None:
             continue

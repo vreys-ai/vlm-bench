@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+
+# Reduce CUDA fragmentation on memory-tight devices like the Colab T4.
+# Must be applied before any torch import. Users can override via env var.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import logging
 
 import hydra

@@ -22,6 +22,11 @@ carbon:
   country_iso_code: null   # auto-detect via CodeCarbon
   measure_power_secs: 5
 
+# Inference-time runtime knobs. Cheap memory-hygiene levers for tight GPUs.
+runtime:
+  image_max_side: 768                # cap longest image side before processor; null disables
+  empty_cache_between_samples: true  # torch.cuda.empty_cache() after each sample
+
 hydra:
   run:
     dir: ${output_dir}/${run_name}
