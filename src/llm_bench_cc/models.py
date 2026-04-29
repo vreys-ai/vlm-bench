@@ -19,9 +19,13 @@ class LoadedModel:
 
 def load_model(cfg) -> LoadedModel:
     dtype = getattr(torch, cfg.dtype)
+    cache_dir = cfg.get("cache_dir", None)
+    local_files_only = cfg.get("local_files_only", False)
     processor = AutoProcessor.from_pretrained(
         cfg.hf_id,
         trust_remote_code=cfg.get("trust_remote_code", False),
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
     )
     model = AutoModelForImageTextToText.from_pretrained(
         cfg.hf_id,
@@ -30,6 +34,8 @@ def load_model(cfg) -> LoadedModel:
         low_cpu_mem_usage=True,
         attn_implementation=cfg.get("attn_implementation", "eager"),
         trust_remote_code=cfg.get("trust_remote_code", False),
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
     )
     model.eval()
     device = next(model.parameters()).device

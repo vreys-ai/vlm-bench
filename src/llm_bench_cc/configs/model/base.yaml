@@ -4,6 +4,12 @@ dtype: float16          # T4 has no bf16; use float16 there. Override to bfloat1
 device_map: auto
 trust_remote_code: false
 attn_implementation: eager   # safe default; switch to "sdpa" or "flash_attention_2" on Ada+
+
+# Persistent cache so the weights aren't re-downloaded each run.
+# Override to a mounted Drive path on Colab, e.g. /content/drive/MyDrive/hf-cache.
+cache_dir: null
+local_files_only: false  # set true to fail fast instead of hitting the network
+
 generation:
   max_new_tokens: 256
   do_sample: false
