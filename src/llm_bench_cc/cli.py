@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import hydra
 from omegaconf import DictConfig
@@ -9,10 +8,9 @@ from omegaconf import DictConfig
 from .runner import run_eval
 
 
-CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "configs")
-
-
-@hydra.main(version_base=None, config_path=CONFIG_DIR, config_name="config")
+# Relative to this module — works both in editable installs and pip-installed wheels
+# because configs ship inside the package.
+@hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     logging.basicConfig(
         level=logging.INFO,

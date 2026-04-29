@@ -99,8 +99,9 @@ Metric tests lock the behavior the composite score depends on. If these change, 
 ## Layout
 
 ```
-configs/                 Hydra: model, eval (smoke/full), top-level config
 src/llm_bench_cc/
+  configs/               Hydra: model, eval (smoke/full), top-level config
+                         (shipped inside the package so pip-installed runs work)
   models.py              HF loader (AutoModelForImageTextToText)
   metrics.py             BLEU-4, ANLS, VQA-acc, relaxed-acc, char-accuracy
   composite.py           Per-task retention ratios → unweighted composite
@@ -113,6 +114,13 @@ tests/                   Metric smoke tests
 
 ## Dataset notes
 
-The HF dataset paths in `configs/eval/*.yaml` are defaults — if a path is unavailable or its
-schema changes, swap `eval.datasets.<task>.hf_id` (and `split`/`subset`). Each task's loader
-tolerates a few common field-name variants but raises clearly on missing fields.
+The HF dataset paths in `src/llm_bench_cc/configs/eval/*.yaml` are defaults — if a path is
+unavailable or its schema changes, swap `eval.datasets.<task>.hf_id` (and `split`/`subset`)
+either by editing the YAML or via Hydra CLI override:
+
+```bash
+python -m llm_bench_cc.cli eval.datasets.caption.hf_id=<other-dataset>
+```
+
+Each task's loader tolerates a few common field-name variants but raises clearly on missing
+fields.
