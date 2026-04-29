@@ -74,21 +74,28 @@ class CarbonTracker:
         if not enabled:
             return
         try:
-            from codecarbon import EmissionsTracker
+            from codecarbon import EmissionsTracker, OfflineEmissionsTracker
         except ImportError:
             logger.warning("codecarbon not installed; energy tracking disabled")
             return
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        self._tracker = EmissionsTracker(
+        common_kwargs = dict(
             project_name=project_name,
             output_dir=output_dir,
             output_file=f"emissions_{project_name}.csv",
             log_level="warning",
             measure_power_secs=cfg.carbon.measure_power_secs,
-            country_iso_code=cfg.carbon.country_iso_code,
             save_to_file=True,
             allow_multiple_runs=True,
         )
+        country_iso_code = cfg.carbon.country_iso_code
+        if country_iso_code:
+            self._tracker = OfflineEmissionsTracker(
+                country_iso_code=country_iso_code,
+                **common_kwargs,
+            )
+        else:
+            self._tracker = EmissionsTracker(**common_kwargs)
 
     def start(self) -> None:
         if self._tracker:
