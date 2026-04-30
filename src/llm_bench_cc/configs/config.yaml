@@ -4,7 +4,7 @@ defaults:
   - _self_
 
 run_name: ${model.name}-${eval.name}-${now:%Y%m%d-%H%M%S}
-output_dir: outputs
+output_dir: /content/drive/MyDrive/vlm-bench-runs
 seed: 42
 
 # Path to a previously written baseline.json. When set and model.name != "base",
