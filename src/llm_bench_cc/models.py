@@ -29,7 +29,7 @@ def load_model(cfg) -> LoadedModel:
     )
     model = AutoModelForImageTextToText.from_pretrained(
         cfg.hf_id,
-        torch_dtype=dtype,
+        dtype=dtype,
         device_map=cfg.device_map,
         low_cpu_mem_usage=True,
         attn_implementation=cfg.get("attn_implementation", "eager"),

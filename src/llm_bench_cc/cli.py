@@ -22,6 +22,9 @@ def main(cfg: DictConfig) -> None:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+    # Quiet HTTP chatter (urllib3 connection pool, HF probe 404s/307s) but keep warnings+.
+    for noisy in ("urllib3", "urllib3.connectionpool", "huggingface_hub", "filelock"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     run_eval(cfg)
 
 
