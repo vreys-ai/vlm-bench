@@ -8,17 +8,42 @@ seed: 42
 cache_dir: null
 local_files_only: false  # set true to fail fast instead of hitting the network
 
-# Stage 0 is scoped to a single light task while we validate the pipeline.
-# Reinstate caption / docvqa / vqa / chart once OCR runs end-to-end.
+# Full 5-task suite. Use eval=smoke for the OCR-only lightning lane.
 tasks:
+  - caption
   - ocr
+  - docvqa
+  - vqa
+  - chart
 
 datasets:
+  caption:
+    hf_id: lmms-lab/COCO-Caption
+    split: val
   ocr:
     hf_id: echo840/OCRBench
     split: test
+  docvqa:
+    hf_id: lmms-lab/DocVQA
+    name: DocVQA
+    split: validation
+  vqa:
+    hf_id: lmms-lab/VQAv2
+    split: validation
+  chart:
+    hf_id: lmms-lab/ChartQA
+    split: test
 
-# Per-task generation overrides on top of model.generation. Trims KV-cache memory.
+# Per-task generation overrides on top of model.generation. Tighter than the
+# 256-token default — answers in these tasks are short, so this saves wall-clock
+# time and KV-cache memory without truncating real predictions.
 generation_overrides:
   ocr:
     max_new_tokens: 64
+  docvqa:
+    max_new_tokens: 64
+  vqa:
+    max_new_tokens: 32
+  chart:
+    max_new_tokens: 64
+  # caption inherits model.generation.max_new_tokens (default 256) — captions are full sentences.
