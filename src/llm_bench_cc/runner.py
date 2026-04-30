@@ -150,12 +150,22 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
     )
     all_overrides = cfg.eval.get("generation_overrides") or {}
     runtime_cfg = cfg.get("runtime") or OmegaConf.create({})
+    shared_cache_dir = cfg.eval.get("cache_dir")
+    shared_local_only = cfg.eval.get("local_files_only", False)
 
     all_metrics: dict[str, Any] = {}
     pred_paths: list[Path] = []
 
     for task_name in cfg.eval.tasks:
         ds_cfg = cfg.eval.datasets[task_name]
+        # Inherit eval-level cache_dir / local_files_only unless the dataset overrides.
+        shared = {}
+        if shared_cache_dir:
+            shared["cache_dir"] = shared_cache_dir
+        if shared_local_only:
+            shared["local_files_only"] = shared_local_only
+        if shared:
+            ds_cfg = OmegaConf.merge(shared, ds_cfg)
         task_overrides = all_overrides.get(task_name) or {}
         task_gen_kwargs = {**base_gen_kwargs, **dict(task_overrides)}
         result = _run_task(

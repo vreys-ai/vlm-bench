@@ -52,10 +52,15 @@ class Task(ABC):
     @staticmethod
     def _load_split(ds_cfg: Any, n: int, seed: int):
         """Centralized loader: handles optional `name` (HF dataset config) and shuffles to N."""
-        from datasets import load_dataset
+        from datasets import DownloadConfig, load_dataset
         kwargs: dict[str, Any] = {}
         cfg_name = getattr(ds_cfg, "name", None) or getattr(ds_cfg, "subset", None)
         if cfg_name:
             kwargs["name"] = cfg_name
+        cache_dir = getattr(ds_cfg, "cache_dir", None)
+        if cache_dir:
+            kwargs["cache_dir"] = cache_dir
+        if getattr(ds_cfg, "local_files_only", False):
+            kwargs["download_config"] = DownloadConfig(local_files_only=True)
         ds = load_dataset(ds_cfg.hf_id, split=ds_cfg.split, **kwargs)
         return ds.shuffle(seed=seed).select(range(min(n, len(ds))))
