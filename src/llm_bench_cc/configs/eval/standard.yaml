@@ -1,0 +1,45 @@
+name: standard
+samples_per_task: 200
+seed: 42
+
+# Persistent HF datasets cache. Override per-run, e.g.
+# eval.cache_dir=/content/drive/MyDrive/hf-cache. Per-dataset cache_dir (under
+# datasets.<task>) takes precedence if set.
+cache_dir: null
+local_files_only: false  # set true to fail fast instead of hitting the network
+
+# 4-task suite — full minus VQAv2. VQAv2's val split is multi-GB parquet that
+# dominates download time and disk on Colab VMs; excluding it keeps routine
+# Stage-1+ candidate iteration fast. Use eval=full for the canonical 5-task pass.
+tasks:
+  - caption
+  - ocr
+  - docvqa
+  - chart
+
+datasets:
+  caption:
+    hf_id: lmms-lab/COCO-Caption
+    split: val
+  ocr:
+    hf_id: echo840/OCRBench
+    split: test
+  docvqa:
+    hf_id: lmms-lab/DocVQA
+    name: DocVQA
+    split: validation
+  chart:
+    hf_id: lmms-lab/ChartQA
+    split: test
+
+# Per-task generation overrides on top of model.generation. Tighter than the
+# 256-token default — answers in these tasks are short, so this saves wall-clock
+# time and KV-cache memory without truncating real predictions.
+generation_overrides:
+  ocr:
+    max_new_tokens: 64
+  docvqa:
+    max_new_tokens: 64
+  chart:
+    max_new_tokens: 64
+  # caption inherits model.generation.max_new_tokens (default 256).

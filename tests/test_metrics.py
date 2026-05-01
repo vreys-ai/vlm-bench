@@ -77,9 +77,16 @@ def test_composite_clips_overshoot():
     assert composite_score(cand, base) == pytest.approx(1.0)
 
 
-def test_retention_ratios_handles_missing():
+def test_retention_ratios_drops_missing():
     base = {"caption": 0.4, "ocr": 0.5}
-    cand = {"caption": 0.4}  # ocr missing
+    cand = {"caption": 0.4}  # ocr missing — composite computed over intersection
     r = retention_ratios(cand, base)
-    assert r["caption"] == pytest.approx(1.0)
-    assert r["ocr"] == 0.0
+    assert r == {"caption": pytest.approx(1.0)}
+
+
+def test_composite_subset_candidate_against_full_baseline():
+    # eval=standard (4 tasks) candidate vs eval=full (5 tasks) baseline:
+    # composite is the mean over the 4 shared tasks, not penalized for the missing one.
+    base = {"caption": 0.10, "ocr": 0.70, "docvqa": 0.80, "vqa": 0.55, "chart": 0.70}
+    cand = {"caption": 0.10, "ocr": 0.70, "docvqa": 0.80, "chart": 0.70}  # vqa skipped
+    assert composite_score(cand, base) == pytest.approx(1.0)

@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python -c \"import sys; print\\(sys.version\\)\")",
-      "Bash(python -c \"import rapidfuzz, jiwer, nltk, pytest\")"
+      "Bash(python -c \"import rapidfuzz, jiwer, nltk, pytest\")",
+      "Bash(python -m pytest tests/test_metrics.py -v)",
+      "Bash(python3 -m pytest tests/test_metrics.py -v)"
     ]
   }
 }
