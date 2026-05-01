@@ -15,6 +15,7 @@ generation:
   do_sample: false
   temperature: 1.0
 
-# Quantization config; null = full-precision load. Variant configs
-# (e.g. bnb-int8, bnb-nf4) populate this. Schema is backend-specific.
-quant: null
+# Quantization is opt-in per variant: bnb-int8 / bnb-nf4 add their own `quant`
+# block via the defaults list (`_self_` after `base`). The base config deliberately
+# does not declare `quant: null` — that creates a typed-None merge edge case that
+# can prevent variants' dict from overriding it.

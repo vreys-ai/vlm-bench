@@ -9,10 +9,25 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
-# Default for bnb llm_int8_skip_modules across all VLM variants — keep the vision
-# tower and projector in their loading dtype so image tokens aren't degraded by
-# quantization. Override per-variant via cfg.quant.skip_modules.
-_DEFAULT_VLM_SKIP_MODULES = ["vision_tower", "multi_modal_projector"]
+# Default for bnb llm_int8_skip_modules: keep all non-LLM towers and projectors
+# in their loading dtype so image/audio tokens aren't degraded by quantization.
+# Names match google/gemma-4-E4B-it's wrapper layout (vision_tower, audio_tower,
+# embed_vision, embed_audio under `model.`); the LLM is at `language_model` and
+# is the only target of quantization.
+#
+# `lm_head` must also be skipped: gemma ties lm_head's weight to the embedding
+# table, and bnb's Linear4bit replacement asserts on a tied (unquantized) shape
+# during the first forward (`fix_4bit_weight_quant_state_from_module`). Skipping
+# also avoids the small-but-real perplexity hit of quantizing the output proj.
+#
+# Override per-variant via cfg.quant.skip_modules.
+_DEFAULT_VLM_SKIP_MODULES = [
+    "vision_tower",
+    "audio_tower",
+    "embed_vision",
+    "embed_audio",
+    "lm_head",
+]
 
 
 @dataclass
@@ -87,6 +102,10 @@ def load_model(cfg) -> LoadedModel:
         quant_backend = quant_cfg.get("backend")
         quant_mode = quant_cfg.get("mode")
         logger.info("Quantization enabled: backend=%s mode=%s", quant_backend, quant_mode)
+    else:
+        # Loud signal so a misconfigured variant (e.g. bad Hydra defaults
+        # composition) doesn't silently fall through to full precision.
+        logger.info("No quantization configured (cfg.quant is None); loading full precision.")
 
     model = AutoModelForImageTextToText.from_pretrained(
         cfg.hf_id,
