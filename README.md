@@ -17,7 +17,7 @@ retention score against a frozen baseline.
 # from repo root
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-# optional, only needed for Stage 1+
+# optional, only needed for Stage 1 Tier A (bitsandbytes int8 / nf4)
 pip install -e ".[quant]"
 ```
 

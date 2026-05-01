@@ -24,11 +24,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
-quant = [
-    "bitsandbytes>=0.43",
-    "auto-gptq>=0.7",
-    "autoawq>=0.2",
-]
+# Stage 1 Tier A only (bitsandbytes int8 / nf4). Tier B (GPTQ/AWQ via auto-gptq
+# or llmcompressor) and Tier C (GGUF via llama-cpp-python) extras will land when
+# those tiers' toolkits are confirmed by pre-flight (see docs/stage1_plan.md).
+quant = ["bitsandbytes>=0.43"]
 
 [project.scripts]
 llm-bench-cc = "llm_bench_cc.cli:main"
