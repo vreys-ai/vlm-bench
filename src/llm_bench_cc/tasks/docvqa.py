@@ -23,7 +23,7 @@ class DocVQATask(Task):
             out.append(Sample(
                 sample_id=sid,
                 image=img.convert("RGB"),
-                prompt=q,
+                prompt=f"{q}\nAnswer the question with a short word or phrase.",
                 references=[str(a) for a in answers if a],
             ))
         return out

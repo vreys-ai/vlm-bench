@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 import time
 from pathlib import Path
 from statistics import mean, median
@@ -19,6 +21,17 @@ from .tasks.registry import get_task
 from .tracking import CarbonTracker, WandbRun
 
 logger = logging.getLogger(__name__)
+
+
+def _cleanup_dataset_cache(ds_cfg) -> None:
+    # HF datasets writes to <cache_dir>/<hf_id with "/" replaced by "___">/.
+    # Removing that subtree frees disk between tasks (esp. VQAv2's val split).
+    cache_dir = ds_cfg.get("cache_dir") or os.path.expanduser("~/.cache/huggingface/datasets")
+    slug = ds_cfg.hf_id.replace("/", "___")
+    path = os.path.join(cache_dir, slug)
+    if os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+        logger.info("Removed dataset cache %s", path)
 
 
 def _maybe_resize(image: Image.Image, max_side: int | None) -> Image.Image:
@@ -187,6 +200,8 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
         pred_paths.append(pred_path)
         if wb:
             wb.log_task(task_name, metrics)
+        if runtime_cfg.get("cleanup_dataset_after_task", False):
+            _cleanup_dataset_cache(ds_cfg)
 
     primaries = {t: m["primary"] for t, m in all_metrics.items()}
 

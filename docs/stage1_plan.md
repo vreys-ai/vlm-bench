@@ -4,6 +4,67 @@
 > repo, a phased plan for the six quant variants, calibration recommendations, and open
 > questions surfaced for user decision before implementation begins.
 
+## Findings during baseline validation (2026-05-01) — pre-Stage-1 fix
+
+The first bf16 baseline run on L4 (run dir `base-full-20260501-062225/`) surfaced two
+issues that had to be resolved before the baseline could be locked.
+
+### 1. Prompt asymmetry across loaders → ANLS scores collapsed
+
+Per-task scores from the first bf16 baseline:
+
+| Task | Metric | Score | Plausible? |
+|---|---|---|---|
+| caption | bleu4 | 0.113 | yes |
+| ocr | anls | **0.058** | no — Gemma-class VLMs hit 0.5–0.8 on OCRBench |
+| docvqa | anls | **0.019** | no — DocVQA val is normally 0.6–0.9 |
+| vqa | vqa_acc | 0.543 | yes |
+| chart | relaxed_acc | 0.700 | yes |
+
+Inspecting `preds_ocr.jsonl` and `preds_docvqa.jsonl` showed verbose markdown answers
+(`"The expression in the image is:\n$$100n + 500$$\n\nIn LaTeX format..."`). Cause:
+loader prompts were inconsistent. VQA and chart loaders explicitly appended a terse-answer
+suffix (`"\nAnswer the question with a short word or phrase."` and `"\nAnswer with a
+short value."` respectively); OCR and DocVQA loaders passed the bare question. Caption is
+fine — its prompt is `"Describe this image in one short sentence."`.
+
+ANLS is harsh by design: similarity is `1 - Levenshtein(h, r) / max(len(h), len(r))`,
+thresholded to 0 below 0.5. A 200-char verbose answer against a 20-char reference scores
+≤ 0.1 even when semantically correct → zeroed out. The metric is correct; the prompts
+were the bug.
+
+**Fix shipped:** added `"\nAnswer the question with a short word or phrase."` to both
+`tasks/ocr.py` and `tasks/docvqa.py` (mirroring the VQA loader's already-validated
+suffix). One-line diff each.
+
+**Implication:** the `base-full-20260501-062225/` baseline is invalid as a retention
+denominator — OCR/DocVQA scores would make any Stage 1 retention number on those tasks
+meaningless. Re-run `eval=full model.name=base` to mint a clean baseline before any
+quant variant work.
+
+### 2. Disk saturation on Colab VM during full eval
+
+The full baseline run nearly exhausted the Colab VM's local disk because every dataset
+(notably VQAv2's full validation split — multi-GB parquet shards) stayed cached on
+disk for the entire run, even after its task completed.
+
+**Fix shipped:** added an opt-in `runtime.cleanup_dataset_after_task: false` config flag.
+When true, the runner `shutil.rmtree`s the HF cache subtree for each dataset
+(`<cache_dir>/<hf_id with "/" replaced by "___">/`) immediately after that task finishes.
+Default is `false` to preserve the existing persistent-cache workflow. Implementation in
+`runner.py:_cleanup_dataset_cache` and the post-task hook.
+
+For the baseline re-run on Colab L4: invoke with `runtime.cleanup_dataset_after_task=true`
+to avoid re-saturating the VM. (The Drive-cache caveat for VQAv2 from
+`reference_drive_cache_caveat.md` still applies if Drive is the cache target.)
+
+### 3. Stale comment in `configs/model/base.yaml`
+
+The dtype line's comment still referenced the abandoned T4 plan. Updated to reflect that
+bf16 is the model's native training dtype and is the correct default on L4/Ada.
+
+---
+
 ## Architecture reality check (what the agent found vs the kickoff brief)
 
 - **`models.py` is a single function with no dispatch.** It hardcodes

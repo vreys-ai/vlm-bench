@@ -1,6 +1,6 @@
 name: base
 hf_id: google/gemma-4-E4B-it
-dtype: bfloat16          # T4 has no bf16; use float16 there. Override to bfloat16 on L4/Ada.
+dtype: bfloat16          # model's native training dtype; override to float16 only on legacy fp16-only hardware
 device_map: auto
 trust_remote_code: false
 attn_implementation: eager   # safe default; switch to "sdpa" or "flash_attention_2" on Ada+

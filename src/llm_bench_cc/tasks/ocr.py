@@ -29,7 +29,7 @@ class OCRTask(Task):
             out.append(Sample(
                 sample_id=sid,
                 image=img.convert("RGB"),
-                prompt=question,
+                prompt=f"{question}\nAnswer the question with a short word or phrase.",
                 references=[str(a) for a in answers if a],
                 metadata={"category": row.get("dataset") or row.get("category")},
             ))

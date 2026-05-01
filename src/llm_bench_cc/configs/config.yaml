@@ -26,6 +26,7 @@ carbon:
 runtime:
   image_max_side: 512                # cap longest image side before processor; null disables
   empty_cache_between_samples: true  # torch.cuda.empty_cache() after each sample
+  cleanup_dataset_after_task: false  # rmtree the HF cache for each dataset once its task finishes; opt-in for tight-disk Colab VMs
 
 hydra:
   run:
