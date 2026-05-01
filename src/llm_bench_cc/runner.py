@@ -215,6 +215,8 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
             "hf_id": loaded.hf_id,
             "dtype": str(loaded.dtype),
             "device": str(loaded.device),
+            "quant_backend": loaded.quant_backend,
+            "quant_mode": loaded.quant_mode,
             "primaries": primaries,
             "all_metrics": all_metrics,
         }
@@ -236,6 +238,8 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
         "hf_id": loaded.hf_id,
         "dtype": str(loaded.dtype),
         "device": str(loaded.device),
+        "quant_backend": loaded.quant_backend,
+        "quant_mode": loaded.quant_mode,
         "is_baseline": is_baseline,
         "composite": composite,
         "retention_ratios": ratios,

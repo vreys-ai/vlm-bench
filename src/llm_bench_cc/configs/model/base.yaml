@@ -14,3 +14,7 @@ generation:
   max_new_tokens: 256
   do_sample: false
   temperature: 1.0
+
+# Quantization config; null = full-precision load. Variant configs
+# (e.g. bnb-int8, bnb-nf4) populate this. Schema is backend-specific.
+quant: null

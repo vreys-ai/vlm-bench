@@ -63,6 +63,38 @@ to avoid re-saturating the VM. (The Drive-cache caveat for VQAv2 from
 The dtype line's comment still referenced the abandoned T4 plan. Updated to reflect that
 bf16 is the model's native training dtype and is the correct default on L4/Ada.
 
+### 4. Three eval tiers + composite-over-intersection (post-bf16-rerun)
+
+The bf16 baseline re-run with the prompt fix produced healthy numbers (OCR ANLS 0.74,
+DocVQA ANLS 0.78), but VQAv2's full validation download still pushed the run past an
+hour and saturated the Colab VM disk. Per-task cleanup mitigates the disk pressure but
+not the wall-clock — the underlying issue is that `load_dataset(...).shuffle().select(N)`
+materializes the entire VQAv2 val parquet before subsetting to 200 samples.
+
+**Decision:** split the eval suite into three tiers instead of switching to streaming or
+a smaller VQA mirror — both of those would change the sampling mechanism and invalidate
+the just-minted baseline.
+
+| Switch | Tasks | Use for |
+|---|---|---|
+| `eval=smoke` | ocr (25 samples) | Plumbing checks, lightning A/Bs |
+| `eval=standard` | caption, ocr, docvqa, chart (200 each, **new**) | Routine Stage-1+ candidate iteration |
+| `eval=full` | + vqa (200 each) | Canonical baseline + final retention numbers |
+
+**Composite contract change (required by the tier split).** Previously
+`composite.retention_ratios` iterated over `baseline_primaries` and assigned 0.0 to
+any task missing from the candidate. This silently broke subset candidate runs — a
+4-task `standard` candidate against the 5-task `full` baseline got
+`vqa_retention = 0.0` automatically, dragging composite to ~0.75 even with perfect
+candidate scores on the 4 it actually ran. Same bug affected `smoke` candidates against
+any multi-task baseline; it just hadn't surfaced because no one had run a subset
+candidate yet.
+
+**Fix shipped in `composite.py`:** compute over the intersection of tasks present in
+both dicts; log a warning naming the skipped tasks. Test `test_retention_ratios_drops_missing`
+updated; new `test_composite_subset_candidate_against_full_baseline` added. The 5-task
+baseline minted today serves as the denominator for all three tiers — no re-run needed.
+
 ---
 
 ## Architecture reality check (what the agent found vs the kickoff brief)

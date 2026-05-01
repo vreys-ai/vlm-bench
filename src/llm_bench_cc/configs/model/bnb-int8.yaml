@@ -1,0 +1,15 @@
+# bitsandbytes 8-bit weights for the LLM submodule; vision tower stays unquantized.
+defaults:
+  - base
+  - _self_
+
+name: bnb-int8
+dtype: float16   # compute dtype for non-int8 layers; bnb int8 numerics are best-tested with fp16
+
+quant:
+  backend: bnb
+  mode: int8
+  llm_int8_threshold: 6.0
+  # skip_modules defaults to vision_tower + multi_modal_projector (set in models.py).
+  # Override here if the model exposes a different submodule layout.
+  skip_modules: null

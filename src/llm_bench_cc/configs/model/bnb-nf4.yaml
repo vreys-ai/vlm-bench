@@ -1,0 +1,15 @@
+# bitsandbytes NF4 4-bit weights for the LLM submodule; vision tower stays unquantized.
+defaults:
+  - base
+  - _self_
+
+name: bnb-nf4
+dtype: bfloat16   # compute dtype for non-quantized layers (vision tower)
+
+quant:
+  backend: bnb
+  mode: nf4
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+  bnb_4bit_compute_dtype: bfloat16   # activation dtype inside quantized layers
+  skip_modules: null

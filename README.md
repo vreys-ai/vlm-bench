@@ -28,17 +28,29 @@ huggingface-cli login    # gemma-4 is gated
 wandb login              # or set WANDB_API_KEY; or wandb.mode=disabled
 ```
 
-## Two eval tiers
+## Three eval tiers
 
 | Switch | Tasks | Samples / task | Use for |
 |---|---|---|---|
-| `eval=smoke` | ocr only | 25 | Plumbing checks, quick A/Bs, lightning sweeps |
-| `eval=full`  | caption, ocr, docvqa, vqa, chart | 200 | Real baseline + Stage 1+ retention denominators |
+| `eval=smoke`    | ocr | 25 | Plumbing checks, quick A/Bs, lightning sweeps |
+| `eval=standard` | caption, ocr, docvqa, chart | 200 | Routine Stage-1+ candidate iteration (no VQAv2 — fast, fits on a Colab VM) |
+| `eval=full`     | caption, ocr, docvqa, vqa, chart | 200 | Canonical baseline + final retention numbers |
+
+`composite` is computed over the **intersection** of tasks present in both the
+candidate's `summary.json` and the baseline's `baseline.json`, so a `standard`
+candidate scores fairly against a `full` baseline (over the 4 shared tasks; a
+warning is logged listing the skipped tasks).
 
 ## Run the OCR-only smoke (lightning)
 
 ```bash
 python -m llm_bench_cc.cli eval=smoke
+```
+
+## Run the standard 4-task pass (no VQA)
+
+```bash
+python -m llm_bench_cc.cli eval=standard
 ```
 
 ## Run the full 5-task baseline
@@ -69,6 +81,27 @@ python -m llm_bench_cc.cli \
 
 `composite` in `summary.json` will be the retention ratio against that baseline.
 
+## Quantized variants (Stage 1 Tier A)
+
+Two bitsandbytes variants ship as model configs. They drop in via Hydra; the
+runner emits `quant_backend` / `quant_mode` into `summary.json`:
+
+```bash
+pip install -e ".[quant]"   # one-time
+
+# 8-bit weights (LLM only; vision tower stays in fp16)
+python -m llm_bench_cc.cli model=bnb-int8 eval=standard \
+    baseline_path=<output_dir>/<baseline-run>/baseline.json
+
+# NF4 4-bit double-quant (LLM only; vision tower stays in bf16)
+python -m llm_bench_cc.cli model=bnb-nf4 eval=standard \
+    baseline_path=<output_dir>/<baseline-run>/baseline.json
+```
+
+Skip-modules default to `[vision_tower, multi_modal_projector]`. Override per
+variant with `model.quant.skip_modules='[…]'` if your model exposes a different
+layout.
+
 ## Persistent caches (Drive on Colab)
 
 Avoid re-downloading the model and datasets on every VM:
@@ -92,7 +125,8 @@ python -m llm_bench_cc.cli eval=full \
 Per-dataset `cache_dir` / `local_files_only` (under `eval.datasets.<task>`) override the eval-level
 defaults if set.
 
-**Don't cache VQAv2 to Drive.** `lmms-lab/VQAv2`'s validation split is large and parquet-sharded;
+**Don't cache VQAv2 to Drive** (only relevant for `eval=full`; `eval=standard` skips VQA entirely).
+`lmms-lab/VQAv2`'s validation split is large and parquet-sharded;
 `load_dataset(...).shuffle().select(range(N))` materializes the full split before subsetting, so
 even a 200-sample run downloads several GB. Route VQA at ephemeral Colab disk while caching the
 small four on Drive:
@@ -190,7 +224,7 @@ python -m llm_bench_cc.cli eval.datasets.caption.hf_id=<other-dataset>
 
 | Stage | Goal | Status |
 |---|---|---|
-| 0. Eval harness + fp16 baseline | Honest retention denominator on L4 | Plumbing validated; `eval=full` baseline regeneration is the last step |
-| 1. Quantization sweep | Cut weights/energy with minimal retention loss (bnb-int8/nf4, GPTQ-4, AWQ-4, GGUF-Q4_K_M/Q5_K_M) | Pending Stage 0 final baseline |
+| 0. Eval harness + bf16 baseline | Honest retention denominator on L4 | Done — bf16 baseline locked 2026-05-01 |
+| 1. Quantization sweep | Cut weights/energy with minimal retention loss (bnb-int8/nf4, GPTQ-4, AWQ-4, GGUF-Q4_K_M/Q5_K_M) | Tier A (bnb-int8 / bnb-nf4) shipped; Tier B/C pending pre-flight |
 | 2. Pruning + Distillation | Shrink architecture, recover capability | Pending Stage 1 winner |
 | 3. Best-of-stack | Combine pruned → distilled → quantized | Pending Stage 2 |
