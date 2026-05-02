@@ -5,29 +5,55 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
-# Default for bnb llm_int8_skip_modules: keep all non-LLM towers and projectors
-# in their loading dtype so image/audio tokens aren't degraded by quantization.
-# Names match google/gemma-4-E4B-it's wrapper layout (vision_tower, audio_tower,
-# embed_vision, embed_audio under `model.`); the LLM is at `language_model` and
-# is the only target of quantization.
-#
-# `lm_head` must also be skipped: gemma ties lm_head's weight to the embedding
-# table, and bnb's Linear4bit replacement asserts on a tied (unquantized) shape
-# during the first forward (`fix_4bit_weight_quant_state_from_module`). Skipping
-# also avoids the small-but-real perplexity hit of quantizing the output proj.
-#
-# Override per-variant via cfg.quant.skip_modules.
-_DEFAULT_VLM_SKIP_MODULES = [
-    "vision_tower",
-    "audio_tower",
-    "embed_vision",
-    "embed_audio",
-    "lm_head",
-]
+# Subtree under which Linear modules ARE quantized. Everything else (vision_tower,
+# audio_tower, embed_vision, embed_audio, lm_head, etc.) gets enumerated and
+# passed to bnb as an explicit skip list — substring-pattern skips like
+# "vision_tower" don't reliably stop bnb's recursion into deep submodules
+# (their matching semantics differ across transformers versions), so we list
+# every Linear path explicitly via a meta-load walk. Override the LLM subtree
+# name per-variant via cfg.quant.llm_subtree.
+_DEFAULT_LLM_SUBTREE = "language_model"
+
+
+def _enumerate_non_llm_linear_paths(
+    hf_id: str, cfg, llm_subtree: str
+) -> list[str]:
+    """Meta-load the model (zero weights, zero VRAM) and return fully-qualified
+    paths of every nn.Linear that is NOT under the LLM subtree. Use as
+    bnb's llm_int8_skip_modules so the matcher hits each Linear exactly."""
+    from accelerate import init_empty_weights
+
+    auto_kwargs = {
+        "trust_remote_code": cfg.get("trust_remote_code", False),
+        "cache_dir": cfg.get("cache_dir"),
+    }
+    if cfg.get("local_files_only", False):
+        auto_kwargs["local_files_only"] = True
+
+    config = AutoConfig.from_pretrained(hf_id, **auto_kwargs)
+    with init_empty_weights():
+        meta_model = AutoModelForImageTextToText.from_config(
+            config,
+            trust_remote_code=cfg.get("trust_remote_code", False),
+        )
+
+    # A Linear is "in the LLM subtree" iff `llm_subtree` appears as a full path
+    # component anywhere in its name. Pad with dots so we don't false-match
+    # something like "audio_language_model_proj".
+    keep_marker = f".{llm_subtree}."
+    skip: list[str] = []
+    for name, module in meta_model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            padded = f".{name}."
+            if keep_marker not in padded:
+                skip.append(name)
+
+    del meta_model
+    return skip
 
 
 @dataclass
@@ -42,7 +68,7 @@ class LoadedModel:
     quant_mode: str | None = None
 
 
-def _build_quant_config(quant_cfg):
+def _build_quant_config(quant_cfg, skip_modules: list[str]):
     """Build a transformers quantization_config from our cfg.quant block.
 
     Lazy-imports bitsandbytes-related types so the base path doesn't require
@@ -56,8 +82,6 @@ def _build_quant_config(quant_cfg):
 
     from transformers import BitsAndBytesConfig
 
-    skip_modules = quant_cfg.get("skip_modules") or _DEFAULT_VLM_SKIP_MODULES
-    skip_modules = list(skip_modules)
     mode = quant_cfg.get("mode")
 
     if mode == "int8":
@@ -98,7 +122,20 @@ def load_model(cfg) -> LoadedModel:
     quant_backend: str | None = None
     quant_mode: str | None = None
     if quant_cfg is not None:
-        quant_kwargs["quantization_config"] = _build_quant_config(quant_cfg)
+        # Build the skip list. If the variant doesn't override, enumerate every
+        # Linear NOT under the LLM subtree via a meta-load (zero VRAM).
+        if quant_cfg.get("skip_modules"):
+            skip_modules = list(quant_cfg.skip_modules)
+            logger.info("Using %d explicit skip_modules from variant config", len(skip_modules))
+        else:
+            llm_subtree = quant_cfg.get("llm_subtree") or _DEFAULT_LLM_SUBTREE
+            skip_modules = _enumerate_non_llm_linear_paths(cfg.hf_id, cfg, llm_subtree)
+            logger.info(
+                "Auto-enumerated %d non-LLM Linear paths to skip (LLM subtree=%r)",
+                len(skip_modules), llm_subtree,
+            )
+
+        quant_kwargs["quantization_config"] = _build_quant_config(quant_cfg, skip_modules)
         quant_backend = quant_cfg.get("backend")
         quant_mode = quant_cfg.get("mode")
         logger.info("Quantization enabled: backend=%s mode=%s", quant_backend, quant_mode)
