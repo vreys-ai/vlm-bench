@@ -24,10 +24,17 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
-# Stage 1 Tier A only (bitsandbytes int8 / nf4). Tier B (GPTQ/AWQ via auto-gptq
-# or llmcompressor) and Tier C (GGUF via llama-cpp-python) extras will land when
-# those tiers' toolkits are confirmed by pre-flight (see docs/stage1_plan.md).
-quant = ["bitsandbytes>=0.43"]
+# Stage 1 Tier A: bitsandbytes int8 / nf4 (runtime-only, no calibration).
+# Stage 1 Tier B: llmcompressor GPTQ-W4A16 (offline calibration via
+#   scripts/quantize_gptq.py; runtime side reads a pre-quantized checkpoint
+#   that ships its own compressed-tensors config). AWQ-W4A16 deferred.
+# Tier C (GGUF via llama-cpp-python) extras will land when that tier's
+# toolkit is confirmed by pre-flight (see docs/stage1_plan.md).
+quant = [
+    "bitsandbytes>=0.43",
+    "llmcompressor>=0.5",
+    "compressed-tensors>=0.7",
+]
 
 [project.scripts]
 llm-bench-cc = "llm_bench_cc.cli:main"

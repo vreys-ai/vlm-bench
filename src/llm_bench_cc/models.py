@@ -20,25 +20,31 @@ _DEFAULT_LLM_SUBTREE = "language_model"
 
 
 def _enumerate_non_llm_linear_paths(
-    hf_id: str, cfg, llm_subtree: str
+    hf_id: str,
+    *,
+    llm_subtree: str = _DEFAULT_LLM_SUBTREE,
+    trust_remote_code: bool = False,
+    cache_dir: str | None = None,
+    local_files_only: bool = False,
 ) -> list[str]:
     """Meta-load the model (zero weights, zero VRAM) and return fully-qualified
     paths of every nn.Linear that is NOT under the LLM subtree. Use as
-    bnb's llm_int8_skip_modules so the matcher hits each Linear exactly."""
+    bnb's llm_int8_skip_modules (Tier A) or llmcompressor's GPTQModifier
+    `ignore` (Tier B) so the matcher hits each Linear exactly."""
     from accelerate import init_empty_weights
 
-    auto_kwargs = {
-        "trust_remote_code": cfg.get("trust_remote_code", False),
-        "cache_dir": cfg.get("cache_dir"),
+    auto_kwargs: dict[str, Any] = {
+        "trust_remote_code": trust_remote_code,
+        "cache_dir": cache_dir,
     }
-    if cfg.get("local_files_only", False):
+    if local_files_only:
         auto_kwargs["local_files_only"] = True
 
     config = AutoConfig.from_pretrained(hf_id, **auto_kwargs)
     with init_empty_weights():
         meta_model = AutoModelForImageTextToText.from_config(
             config,
-            trust_remote_code=cfg.get("trust_remote_code", False),
+            trust_remote_code=trust_remote_code,
         )
 
     # A Linear is "in the LLM subtree" iff `llm_subtree` appears as a full path
@@ -73,11 +79,18 @@ def _build_quant_config(quant_cfg, skip_modules: list[str]):
 
     Lazy-imports bitsandbytes-related types so the base path doesn't require
     the `quant` extra to be installed.
+
+    Returns None for backends whose checkpoint already ships its own
+    quantization config in `config.json` (e.g. GPTQ-W4A16 saved by
+    llmcompressor as compressed-tensors). Those load via plain
+    from_pretrained — passing a second config would conflict.
     """
     backend = quant_cfg.get("backend")
+    if backend == "gptq":
+        return None
     if backend != "bnb":
         raise ValueError(
-            f"Unsupported quant backend {backend!r}; Tier A only supports 'bnb'."
+            f"Unsupported quant backend {backend!r}; expected 'bnb' or 'gptq'."
         )
 
     from transformers import BitsAndBytesConfig
@@ -122,22 +135,42 @@ def load_model(cfg) -> LoadedModel:
     quant_backend: str | None = None
     quant_mode: str | None = None
     if quant_cfg is not None:
-        # Build the skip list. If the variant doesn't override, enumerate every
-        # Linear NOT under the LLM subtree via a meta-load (zero VRAM).
-        if quant_cfg.get("skip_modules"):
-            skip_modules = list(quant_cfg.skip_modules)
-            logger.info("Using %d explicit skip_modules from variant config", len(skip_modules))
-        else:
-            llm_subtree = quant_cfg.get("llm_subtree") or _DEFAULT_LLM_SUBTREE
-            skip_modules = _enumerate_non_llm_linear_paths(cfg.hf_id, cfg, llm_subtree)
-            logger.info(
-                "Auto-enumerated %d non-LLM Linear paths to skip (LLM subtree=%r)",
-                len(skip_modules), llm_subtree,
-            )
-
-        quant_kwargs["quantization_config"] = _build_quant_config(quant_cfg, skip_modules)
         quant_backend = quant_cfg.get("backend")
         quant_mode = quant_cfg.get("mode")
+
+        if quant_backend == "bnb":
+            # bnb needs an explicit per-Linear skip list. If the variant doesn't
+            # override, enumerate every Linear NOT under the LLM subtree via a
+            # meta-load (zero VRAM).
+            if quant_cfg.get("skip_modules"):
+                skip_modules = list(quant_cfg.skip_modules)
+                logger.info("Using %d explicit skip_modules from variant config", len(skip_modules))
+            else:
+                llm_subtree = quant_cfg.get("llm_subtree") or _DEFAULT_LLM_SUBTREE
+                skip_modules = _enumerate_non_llm_linear_paths(
+                    cfg.hf_id,
+                    llm_subtree=llm_subtree,
+                    trust_remote_code=cfg.get("trust_remote_code", False),
+                    cache_dir=cache_dir,
+                    local_files_only=local_files_only,
+                )
+                logger.info(
+                    "Auto-enumerated %d non-LLM Linear paths to skip (LLM subtree=%r)",
+                    len(skip_modules), llm_subtree,
+                )
+            qc = _build_quant_config(quant_cfg, skip_modules)
+            if qc is not None:
+                quant_kwargs["quantization_config"] = qc
+        elif quant_backend == "gptq":
+            # The pre-quantized checkpoint at cfg.hf_id ships its own
+            # compressed-tensors config; transformers + compressed-tensors
+            # auto-instantiate it on from_pretrained. Nothing to inject here.
+            pass
+        else:
+            raise ValueError(
+                f"Unsupported quant backend {quant_backend!r}; expected 'bnb' or 'gptq'."
+            )
+
         logger.info("Quantization enabled: backend=%s mode=%s", quant_backend, quant_mode)
     else:
         # Loud signal so a misconfigured variant (e.g. bad Hydra defaults

@@ -1,0 +1,24 @@
+# GPTQ-W4A16 quantized gemma-4-E4B-it produced offline by scripts/quantize_gptq.py
+# (Neural Magic llmcompressor, compressed-tensors save format).
+#
+# This config does NOT trigger quantization at load time — it points at a
+# pre-quantized local checkpoint whose `config.json` carries its own
+# compressed-tensors block. transformers auto-instantiates it on load.
+#
+# Override `hf_id` on the CLI to match wherever you saved the checkpoint, e.g.:
+#   model=gptq-w4a16 model.hf_id=/mnt/ssd/llm-bench-cc/quant/gptq-w4a16
+defaults:
+  - base
+  - _self_
+
+name: gptq-w4a16
+hf_id: /tmp/llm-bench-cc/quant/gptq-w4a16   # local SSD path; override per-VM as needed
+dtype: bfloat16   # compute dtype for unquantized layers (vision + audio towers, embeds, lm_head)
+
+quant:
+  backend: gptq
+  mode: w4a16
+  bits: 4
+  group_size: 128
+  # `targets` / `ignore` / `scheme` live in the saved checkpoint's
+  # compressed-tensors config — recorded here for run-summary provenance only.
