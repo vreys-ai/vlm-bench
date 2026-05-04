@@ -95,6 +95,88 @@ both dicts; log a warning naming the skipped tasks. Test `test_retention_ratios_
 updated; new `test_composite_subset_candidate_against_full_baseline` added. The 5-task
 baseline minted today serves as the denominator for all three tiers — no re-run needed.
 
+### 5. Tier A results + the bnb skip-modules gotcha (2026-05-02)
+
+**Tier A (bitsandbytes int8 / nf4) shipped and validated on Colab L4.** Results
+against the bf16 standard baseline (composite ≈ 1.0 by construction):
+
+| Variant | Composite | Peak VRAM | vs base |
+|---|---|---|---|
+| base (bf16) | 1.00 | 16.7 GB | — |
+| bnb-int8    | 0.98 | 12.6 GB | −4.1 GB / −2 pp |
+| bnb-nf4     | 0.92 | 10.8 GB | −5.9 GB / −8 pp |
+
+Both clear the ≥0.80 retention bar with significant headroom. int8 is the
+default Tier A pick; nf4 trades ~6 pp retention for an extra ~1.8 GB savings.
+
+**The skip-modules saga (load-bearing for any future bnb-style dispatch).**
+Initial Tier A runs collapsed retention by 20–50× across all tasks despite VRAM
+dropping. Diagnosis path:
+1. `quant_*` fields missing from `summary.json` revealed a stale-install-then-
+   stale-yaml-then-Hydra-merge sequence. The Hydra trigger was a `quant: null`
+   schema sentinel in `model/base.yaml` that didn't cleanly merge under the
+   variant's `quant: {dict}`. **Fix shipped:** removed the null sentinel;
+   variants `_self_`-add the `quant` key from scratch. Defensive log added in
+   `models.py` so future runs print either `"Quantization enabled: ..."` or
+   `"No quantization configured ..."` — diagnosis is now a one-line log scan.
+2. With Hydra fixed, bnb actually quantized but produced `Linear4bit` modules
+   throughout `vision_tower`, `audio_tower`, `embed_vision`, and `embed_audio`
+   despite passing those names in `BitsAndBytesConfig.llm_int8_skip_modules`.
+   Root cause: bnb's substring/endswith matching against `current_key_name_str`
+   doesn't reliably stop recursion into deep submodules; passing
+   `"vision_tower"` matches the tower module itself but not its 100+ internal
+   Linears. The gemma-4-E4B-it wrapper layout is `model.{vision_tower,
+   language_model, audio_tower, embed_vision, embed_audio}` — note `audio_tower`
+   (new vs gemma-3) and absence of `multi_modal_projector` (replaced by
+   per-modality `embed_*` linears).
+3. Separate but related: `lm_head` must also be skipped — gemma ties its weight
+   to the embedding table, and bnb's `Linear4bit.fix_4bit_weight_quant_state_from_module`
+   asserts on the (still-tied, still-full-shape) tensor on the first forward.
+
+**Fix shipped in `models.py:_enumerate_non_llm_linear_paths`:** meta-load the
+model with `accelerate.init_empty_weights` (zero VRAM, zero real weights), walk
+every `nn.Linear`, return the full path of each one NOT under the LLM subtree
+(`language_model` for gemma-4). Pass that explicit list to
+`llm_int8_skip_modules` — exact full paths trivially match the bnb walker
+regardless of its substring/endswith semantics. `lm_head` is automatically
+included by this enumeration (it's a Linear, it's not under `language_model`).
+LLM subtree name is overrideable via `cfg.quant.llm_subtree` for non-gemma
+models. The variant-level `cfg.quant.skip_modules` escape hatch still wins
+when set explicitly.
+
+**Implication for Tier B/C:** any new backend that operates on a VLM wrapper
+(GPTQ via llmcompressor, AWQ, etc.) will face the same "quantize the LLM,
+preserve the towers" problem. The meta-load enumerator is the reusable
+primitive — Tier B's calibration step should consume the same
+`_enumerate_non_llm_linear_paths` output to scope its calibration forwards
+and weight replacement to `language_model.*` only.
+
+### 6. TurboQuant (arxiv 2504.19874) — evaluated, parked
+
+User raised TurboQuant during Tier A's broken-skip-modules window as a possible
+pivot. Read the paper before pivoting. Findings: it's a randomized-rotation
+vector quantizer for **KV cache and ANN search**, not weight quantization.
+Validated bit-widths 2.5/3.5 b/ch on KV-cache tasks. No released kernels, no
+weight-task validation, no comparison to GPTQ/AWQ/NF4. Wrong tier of memory
+for this benchmark — KV cache is sub-GB at our seq lengths; weights dominate
+peak VRAM. Bookmarked for any future long-context / multi-turn deployment
+scenario where KV cache becomes the dominant term. For weight-side
+rotation-based methods now, **SpinQuant** and **QuaRot** are the closer
+cousins (both have public code, weight-task validation, and GPTQ/AWQ
+comparisons) — flag them again when shopping for Tier B alternatives.
+
+### 7. Pre-flight Q2 implicitly resolved
+
+Open question Q2 ("auto-gptq/autoawq vs llmcompressor for Tier B") is now
+answered: **llmcompressor wins by default.** Tier A's success on the gemma-4
+wrapper without modifying the toolkit (only the skip-list) demonstrates that
+multimodal VLM support requires careful submodule-aware tooling. auto-gptq /
+autoawq don't natively support VLM wrappers and would require the same
+language-model-extraction surgery the plan flagged — at which point picking
+the toolkit that is actively maintained and ships VLM support out-of-the-box
+(llmcompressor) is the obvious call. Don't revisit auto-gptq for Tier B unless
+llmcompressor itself fails on gemma-4.
+
 ---
 
 ## Architecture reality check (what the agent found vs the kickoff brief)

@@ -36,19 +36,32 @@ class WandbRun:
     def log_task(self, task_name: str, metrics: dict[str, Any]) -> None:
         if not self._wb:
             return
-        flat = {f"{task_name}/{k}": v for k, v in metrics.items()}
+        # Skip the duplicate "primary" alias and the string "primary_metric" label —
+        # the metric is already in `metrics` under its real name (e.g. relaxed_acc),
+        # so panels show the metric name instead of "primary".
+        skip = {"primary", "primary_metric"}
+        flat = {f"{task_name}/{k}": v for k, v in metrics.items() if k not in skip}
         self._wb.log(flat)
 
     def log_summary(self, summary: dict[str, Any]) -> None:
         if not self._wb:
             return
-        # flat top-level keys go into summary; tasks dict logged as artifact-friendly run summary
+        tasks = summary["tasks"]
+        n = len(tasks) or 1
+        avg_peak_vram_gb = sum(m["peak_vram_gb"] for m in tasks.values()) / n
+        avg_energy_kwh = sum(m["energy_kwh"] for m in tasks.values()) / n
         self._wb.summary.update({
             "composite": summary["composite"],
+            "avg_peak_vram_gb": avg_peak_vram_gb,
+            "avg_energy_kwh": avg_energy_kwh,
             "total_energy_kwh": summary["total_energy_kwh"],
             "total_co2_grams": summary["total_co2_grams"],
         })
-        self._wb.log({"composite": summary["composite"]})
+        self._wb.log({
+            "composite": summary["composite"],
+            "avg_peak_vram_gb": avg_peak_vram_gb,
+            "avg_energy_kwh": avg_energy_kwh,
+        })
 
     def save_file(self, path: str | Path) -> None:
         if not self._wb:
