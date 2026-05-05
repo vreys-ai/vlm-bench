@@ -150,7 +150,12 @@ def _row_to_messages(row: dict[str, Any]) -> tuple[Any, str]:
 
 def _preprocess_for_calibration(rows, processor, max_seq_length: int):
     """Render each row through the processor's chat template. Returns a list of
-    dicts ready for llmcompressor's data_collator (one example per dict)."""
+    dicts of Python-native values (lists, not tensors) so it can be wrapped
+    in `datasets.Dataset.from_list` — llmcompressor's oneshot pipeline runs
+    its calibration data through `dataset_manager`, which calls
+    `.column_names` on the input. Caller is expected to do
+    `Dataset.from_list(examples).with_format("torch")`; the data_collator
+    then receives torch tensors per example."""
     examples = []
     for row in rows:
         image, user_text = _row_to_messages(row)
@@ -171,9 +176,12 @@ def _preprocess_for_calibration(rows, processor, max_seq_length: int):
         # Truncate to max_seq_length on the token axis; calibration doesn't
         # need long contexts and over-long inputs blow up GPTQ activation memory.
         ids = inputs["input_ids"][0][:max_seq_length]
-        ex: dict[str, Any] = {"input_ids": ids, "attention_mask": ids.new_ones(ids.shape)}
+        ex: dict[str, Any] = {
+            "input_ids": ids.tolist(),
+            "attention_mask": [1] * len(ids),
+        }
         if "pixel_values" in inputs:
-            ex["pixel_values"] = inputs["pixel_values"][0]
+            ex["pixel_values"] = inputs["pixel_values"][0].tolist()
         examples.append(ex)
     return examples
 
@@ -287,6 +295,11 @@ def main() -> None:
     logger.info("Pulled %d calibration rows; preprocessing ...", len(rows))
     examples = _preprocess_for_calibration(rows, processor, max_seq_length=args.max_seq_length)
 
+    from datasets import Dataset
+    calibration_dataset = Dataset.from_list(examples).with_format("torch")
+    logger.info("Wrapped %d examples as Dataset (columns=%s)",
+                len(calibration_dataset), calibration_dataset.column_names)
+
     # 4. Run GPTQ.
     recipe = GPTQModifier(
         targets=["Linear"],
@@ -297,10 +310,10 @@ def main() -> None:
                 args.scheme, len(examples), args.max_seq_length)
     oneshot(
         model=model,
-        dataset=examples,
+        dataset=calibration_dataset,
         recipe=recipe,
         max_seq_length=args.max_seq_length,
-        num_calibration_samples=len(examples),
+        num_calibration_samples=len(calibration_dataset),
         data_collator=_data_collator,
     )
 
