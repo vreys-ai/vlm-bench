@@ -25,6 +25,12 @@ The override forces the resolver to use transformers 5.5+ regardless of any
 declared upper bound. `--system` writes into the Colab Python (drop it if
 you're in a venv).
 
+One last runtime gotcha: transformers 5.5 dropped the public
+`TORCH_INIT_FUNCTIONS` mapping that llmcompressor.utils.dev imports at
+top-level. We patch it back onto `transformers.modeling_utils` from
+`torch.nn.init` *before* importing llmcompressor — see
+`_patch_transformers_torch_init_functions` below.
+
 Run:
     python scripts/quantize_gptq.py \
         --output-dir /tmp/llm-bench-cc/quant/gptq-w4a16 \
@@ -149,6 +155,37 @@ def _data_collator(batch):
     return {k: v.unsqueeze(0) if v.dim() < 4 else v for k, v in batch[0].items()}
 
 
+def _patch_transformers_torch_init_functions() -> None:
+    """transformers>=5.5 dropped the public `TORCH_INIT_FUNCTIONS` mapping that
+    llmcompressor.utils.dev.skip_weights_initialize imports. The mapping is
+    cheap to reconstruct from torch.nn.init, so we install it on
+    transformers.modeling_utils before importing llmcompressor. This is a
+    runtime shim only — the resolution lands upstream when llmcompressor
+    catches up to transformers 5.x. See reference_llmcompressor_install
+    memory entry for context."""
+    import torch.nn as nn
+    import transformers.modeling_utils as tmu
+
+    if hasattr(tmu, "TORCH_INIT_FUNCTIONS"):
+        return
+    tmu.TORCH_INIT_FUNCTIONS = {
+        "uniform_": nn.init.uniform_,
+        "normal_": nn.init.normal_,
+        "trunc_normal_": nn.init.trunc_normal_,
+        "constant_": nn.init.constant_,
+        "xavier_uniform_": nn.init.xavier_uniform_,
+        "xavier_normal_": nn.init.xavier_normal_,
+        "kaiming_uniform_": nn.init.kaiming_uniform_,
+        "kaiming_normal_": nn.init.kaiming_normal_,
+        "uniform": nn.init.uniform,
+        "normal": nn.init.normal,
+        "xavier_uniform": nn.init.xavier_uniform,
+        "xavier_normal": nn.init.xavier_normal,
+        "kaiming_uniform": nn.init.kaiming_uniform,
+        "kaiming_normal": nn.init.kaiming_normal,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model-id", default="google/gemma-4-E4B-it")
@@ -170,6 +207,9 @@ def main() -> None:
     # Lazy imports — package's base path mustn't require these.
     import torch
     from transformers import AutoProcessor, AutoModelForImageTextToText
+
+    _patch_transformers_torch_init_functions()
+
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import GPTQModifier
 
