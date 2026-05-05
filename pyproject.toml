@@ -7,7 +7,8 @@ readme = "README.md"
 
 dependencies = [
     "torch>=2.4",
-    "transformers>=5.5",
+# specific transformers version required for llmcompressor
+    "transformers>=4.56.1,<=4.57.6",
     "accelerate>=0.34",
     "Pillow>=10",
     "datasets>=3.0",
