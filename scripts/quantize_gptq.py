@@ -64,6 +64,16 @@ DEFAULT_CALIBRATION_SOURCES = [
     ("HuggingFaceM4/Docmatix",     "zero-shot-exp", "train", 0.4),
 ]
 
+# Smoke recipe: Docmatix only. the_cauldron[okvqa] references COCO images by
+# absolute /fsx/... paths that aren't shipped with the public release, so it
+# only works inside HF's infra. Docmatix bundles its images in the parquet
+# shards and Just Works. Use --smoke + small --num-calibration-samples to
+# validate the end-to-end script before committing to a full run.
+SMOKE_CALIBRATION_SOURCES = [
+    ("HuggingFaceM4/Docmatix", "zero-shot-exp", "train", 1.0),
+]
+SMOKE_DEFAULT_SAMPLES = 32
+
 
 def _git_sha(repo_root: Path) -> str:
     try:
@@ -90,13 +100,32 @@ def _load_calibration_rows(sources, total: int, seed: int) -> list[dict[str, Any
         if name:
             kwargs["name"] = name
         logger.info("Loading calibration source %s [%s] split=%s -> %d rows", hf_id, name, split, n)
-        ds = load_dataset(hf_id, **kwargs).shuffle(seed=seed).select(range(min(n, 5000)))
-        # `5000` cap above keeps the in-memory shuffle cheap; we then sample
-        # exactly `n` to honor the weighting precisely.
-        idxs = rng.sample(range(len(ds)), k=min(n, len(ds)))
+        # Cap shuffle window at 5x the target to keep in-memory shuffle cheap
+        # but leave room to skip rows that fail to materialize (e.g. broken
+        # image paths in the_cauldron[okvqa]).
+        cap = max(min(n * 5, 5000), n)
+        ds = load_dataset(hf_id, **kwargs).shuffle(seed=seed).select(range(min(cap, 1_000_000)))
+        idxs = rng.sample(range(len(ds)), k=min(cap, len(ds)))
+        kept = 0
+        skipped = 0
         for i in idxs:
-            row = ds[i]
+            if kept >= n:
+                break
+            try:
+                row = ds[i]
+            except (FileNotFoundError, OSError) as e:
+                # Image deref failed (typically a missing FSX path baked into
+                # the dataset). Drop the row and try the next index.
+                skipped += 1
+                if skipped <= 3:
+                    logger.warning("Skipping row %d from %s: %s", i, hf_id, e)
+                continue
             out.append({"_source": hf_id, **row})
+            kept += 1
+        if skipped:
+            logger.warning("Skipped %d rows from %s due to image load errors", skipped, hf_id)
+        if kept < n:
+            logger.warning("Only got %d/%d rows from %s after skips", kept, n, hf_id)
     rng.shuffle(out)
     return out[:total]
 
@@ -191,7 +220,12 @@ def main() -> None:
     parser.add_argument("--model-id", default="google/gemma-4-E4B-it")
     parser.add_argument("--output-dir", required=True, type=Path,
                         help="Where to save the quantized checkpoint (local SSD recommended).")
-    parser.add_argument("--num-calibration-samples", type=int, default=256)
+    parser.add_argument("--num-calibration-samples", type=int, default=None)
+    parser.add_argument("--smoke", action="store_true",
+                        help="Use a tiny single-source calibration set (Docmatix only) "
+                             "for end-to-end pipeline validation. Defaults "
+                             f"--num-calibration-samples to {SMOKE_DEFAULT_SAMPLES} "
+                             "unless explicitly overridden.")
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--bits", type=int, default=4)
@@ -201,6 +235,15 @@ def main() -> None:
     parser.add_argument("--cache-dir", default=None,
                         help="HF cache dir for both the model and calibration datasets.")
     args = parser.parse_args()
+
+    if args.smoke:
+        sources = SMOKE_CALIBRATION_SOURCES
+        if args.num_calibration_samples is None:
+            args.num_calibration_samples = SMOKE_DEFAULT_SAMPLES
+    else:
+        sources = DEFAULT_CALIBRATION_SOURCES
+        if args.num_calibration_samples is None:
+            args.num_calibration_samples = 256
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
@@ -235,8 +278,11 @@ def main() -> None:
     model.eval()
 
     # 3. Build calibration dataset.
+    logger.info("Calibration mode: %s (%d samples from %d source(s))",
+                "smoke" if args.smoke else "default",
+                args.num_calibration_samples, len(sources))
     rows = _load_calibration_rows(
-        DEFAULT_CALIBRATION_SOURCES, total=args.num_calibration_samples, seed=args.seed
+        sources, total=args.num_calibration_samples, seed=args.seed
     )
     logger.info("Pulled %d calibration rows; preprocessing ...", len(rows))
     examples = _preprocess_for_calibration(rows, processor, max_seq_length=args.max_seq_length)
@@ -271,9 +317,10 @@ def main() -> None:
         "bits": args.bits,
         "group_size": args.group_size,
         "calibration": {
+            "mode": "smoke" if args.smoke else "default",
             "sources": [
                 {"hf_id": s[0], "name": s[1], "split": s[2], "weight": s[3]}
-                for s in DEFAULT_CALIBRATION_SOURCES
+                for s in sources
             ],
             "num_samples": len(examples),
             "seed": args.seed,
