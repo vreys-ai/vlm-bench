@@ -270,6 +270,19 @@ def main() -> None:
     parser.add_argument("--group-size", type=int, default=128)
     parser.add_argument("--scheme", default="W4A16",
                         help="llmcompressor preset; pinned to W4A16 for Tier B.")
+    parser.add_argument("--pipeline", default="basic",
+                        choices=["basic", "sequential", "independent"],
+                        help="llmcompressor calibration pipeline. 'basic' runs full "
+                             "forward passes and hooks per-Linear (slower but works on "
+                             "any model). 'sequential' fx-traces each decoder layer "
+                             "in isolation — faster but needs --sequential-targets "
+                             "set to the model's decoder-layer class (e.g. "
+                             "Gemma4DecoderLayer) since fx can't trace Gemma 4's "
+                             "top-level forward.")
+    parser.add_argument("--sequential-targets", default=None,
+                        help="Comma-separated class names for the sequential pipeline "
+                             "(e.g. 'Gemma4DecoderLayer'). Ignored unless "
+                             "--pipeline sequential.")
     parser.add_argument("--cache-dir", default=None,
                         help="HF cache dir for both the model and calibration datasets.")
     args = parser.parse_args()
@@ -331,13 +344,20 @@ def main() -> None:
                 len(calibration_dataset), calibration_dataset.column_names)
 
     # 4. Run GPTQ.
-    recipe = GPTQModifier(
-        targets=["Linear"],
-        scheme=args.scheme,
-        ignore=ignore,
+    modifier_kwargs: dict[str, Any] = {
+        "targets": ["Linear"],
+        "scheme": args.scheme,
+        "ignore": ignore,
+    }
+    if args.sequential_targets:
+        modifier_kwargs["sequential_targets"] = [
+            t.strip() for t in args.sequential_targets.split(",") if t.strip()
+        ]
+    recipe = GPTQModifier(**modifier_kwargs)
+    logger.info(
+        "Running llmcompressor.oneshot (scheme=%s, pipeline=%s, n=%d, max_seq_length=%d) ...",
+        args.scheme, args.pipeline, len(examples), args.max_seq_length,
     )
-    logger.info("Running llmcompressor.oneshot (scheme=%s, n=%d, max_seq_length=%d) ...",
-                args.scheme, len(examples), args.max_seq_length)
     oneshot(
         model=model,
         dataset=calibration_dataset,
@@ -345,6 +365,7 @@ def main() -> None:
         max_seq_length=args.max_seq_length,
         num_calibration_samples=len(calibration_dataset),
         data_collator=_data_collator,
+        pipeline=args.pipeline,
     )
 
     # 5. Persist checkpoint and provenance.
@@ -371,6 +392,8 @@ def main() -> None:
         },
         "ignore_count": len(ignore),
         "llm_subtree": "language_model",
+        "pipeline": args.pipeline,
+        "sequential_targets": modifier_kwargs.get("sequential_targets"),
     }
     with (args.output_dir / "quant_recipe.json").open("w") as f:
         json.dump(recipe_payload, f, indent=2)
