@@ -5,8 +5,21 @@ vision tower, audio tower, embed_vision, embed_audio, and lm_head are kept in
 bf16 — same boundary the bnb Tier-A pipeline enforces, just plumbed through
 llmcompressor's `ignore` instead of `llm_int8_skip_modules`.
 
-Run on Colab L4 (or any 24 GB GPU) with the `quant` extra installed:
-    pip install -e '.[quant]'
+Install on Colab L4 (or any 24 GB GPU) — three steps because llmcompressor's
+setup.py pins transformers <= 4.57 while Gemma 4 needs >= 5.5 (the README at
+github.com/vllm-project/llm-compressor explains the gap). llmcompressor is
+deliberately NOT in the project's `[quant]` extra; install it manually:
+
+    pip install "llm-bench-cc[quant] @ git+<your-repo-url>"
+    pip install --no-deps "llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git"
+    pip install -U "transformers>=5.5" "compressed-tensors>=0.14"
+
+`--no-deps` on the llmcompressor install is what makes this robust: pip won't
+re-pin transformers back to 4.57 from llmcompressor's setup.py. Then the
+explicit transformers + compressed-tensors upgrade pulls in what the runtime
+shim (`llmcompressor/utils/dev.py` on main) actually needs.
+
+Run:
     python scripts/quantize_gptq.py \
         --output-dir /tmp/llm-bench-cc/quant/gptq-w4a16 \
         --num-calibration-samples 256

@@ -26,19 +26,17 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 # Stage 1 Tier A: bitsandbytes int8 / nf4 (runtime-only, no calibration).
-# Stage 1 Tier B: llmcompressor GPTQ-W4A16 (offline calibration via
-#   scripts/quantize_gptq.py; runtime side reads a pre-quantized checkpoint
-#   that ships its own compressed-tensors config). AWQ-W4A16 deferred.
+# Stage 1 Tier B: GPTQ-W4A16 via llmcompressor + post-install transformers 5.x.
+#   llmcompressor is INTENTIONALLY NOT listed here — its setup.py pins
+#   transformers <= 4.57.6 while runtime needs >= 5.5 for Gemma 4, and
+#   resolving the conflict inside a single pip transaction is fragile.
+#   Install it manually after the project is in place; see scripts/quantize_gptq.py
+#   docstring for the exact commands. compressed-tensors is also installed
+#   transitively by llmcompressor's manual install.
 # Tier C (GGUF via llama-cpp-python) extras will land when that tier's
 # toolkit is confirmed by pre-flight (see docs/stage1_plan.md).
 quant = [
     "bitsandbytes>=0.43",
-    # llmcompressor PyPI 0.10.0.2 imports TORCH_INIT_FUNCTIONS from
-    # transformers.modeling_utils (4.x path) with no fallback. The shim
-    # for transformers 5.x (`from transformers.initialization import ...`)
-    # only exists on `main`. Pin to git+main until a release ships it.
-    "llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git",
-    "compressed-tensors>=0.14",
 ]
 
 [project.scripts]
