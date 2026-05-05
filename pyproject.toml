@@ -7,7 +7,7 @@ readme = "README.md"
 
 dependencies = [
     "torch>=2.4",
-# specific transformers version required for llmcompressor
+    # specific transformers version required for llmcompressor
     "transformers>=4.56.1,<=4.57.6",
     "accelerate>=0.34",
     "Pillow>=10",
@@ -37,7 +37,7 @@ quant = [
     # transformers.modeling_utils (4.x path) with no fallback. The shim
     # for transformers 5.x (`from transformers.initialization import ...`)
     # only exists on `main`. Pin to git+main until a release ships it.
-    "llmcompressor @ git+https://github.com/vllm-project/llm-compressor@main",
+    "llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git",
     "compressed-tensors>=0.14",
 ]
 
