@@ -7,7 +7,7 @@ readme = "README.md"
 
 dependencies = [
     "torch>=2.4",
-    "transformers>=4.50",
+    "transformers>=5.5",
     "accelerate>=0.34",
     "Pillow>=10",
     "datasets>=3.0",
