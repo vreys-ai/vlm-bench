@@ -5,19 +5,25 @@ vision tower, audio tower, embed_vision, embed_audio, and lm_head are kept in
 bf16 — same boundary the bnb Tier-A pipeline enforces, just plumbed through
 llmcompressor's `ignore` instead of `llm_int8_skip_modules`.
 
-Install on Colab L4 (or any 24 GB GPU) — three steps because llmcompressor's
-setup.py pins transformers <= 4.57 while Gemma 4 needs >= 5.5 (the README at
-github.com/vllm-project/llm-compressor explains the gap). llmcompressor is
-deliberately NOT in the project's `[quant]` extra; install it manually:
+Install on Colab L4 (or any 24 GB GPU). Both llmcompressor and compressed-tensors
+must come from git+main (PyPI 0.10.0.2 / 0.15.0.1 lack the transformers-5.x
+shim and the `compressed_tensors.distributed` submodule, respectively).
+llmcompressor's setup.py also pins transformers <= 4.57, but Gemma 4 needs
+>= 5.5 — we resolve the conflict with uv's `--override` (which the llmcompressor
+README itself recommends), so the rest of the dep tree (loguru, pydantic,
+auto-round, ...) still resolves normally:
 
-    pip install "llm-bench-cc[quant] @ git+<your-repo-url>"
-    pip install --no-deps "llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git"
-    pip install -U "transformers>=5.5" "compressed-tensors>=0.14"
+    pip install -q uv
+    echo "transformers>=5.5,<6" > /tmp/overrides.txt
+    uv pip install --system --override /tmp/overrides.txt \\
+        "llm-bench-cc[quant] @ git+<your-repo-url>"
+    uv pip install --system --override /tmp/overrides.txt \\
+        "compressed-tensors @ git+https://github.com/neuralmagic/compressed-tensors.git" \\
+        "llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git"
 
-`--no-deps` on the llmcompressor install is what makes this robust: pip won't
-re-pin transformers back to 4.57 from llmcompressor's setup.py. Then the
-explicit transformers + compressed-tensors upgrade pulls in what the runtime
-shim (`llmcompressor/utils/dev.py` on main) actually needs.
+The override forces the resolver to use transformers 5.5+ regardless of any
+declared upper bound. `--system` writes into the Colab Python (drop it if
+you're in a venv).
 
 Run:
     python scripts/quantize_gptq.py \

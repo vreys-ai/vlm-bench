@@ -7,8 +7,11 @@ readme = "README.md"
 
 dependencies = [
     "torch>=2.4",
-    # specific transformers version required for llmcompressor
-    "transformers>=4.56.1,<=4.57.6",
+    # >=4.56.1 picks up Gemma 3n / "gemma-4-E4B-it" arch support. No upper
+    # bound: Tier B (llmcompressor) needs transformers 5.x at runtime, and
+    # we let the install-time `uv pip --override` force whichever 5.x the
+    # llmcompressor main shim expects. See scripts/quantize_gptq.py docstring.
+    "transformers>=4.56.1",
     "accelerate>=0.34",
     "Pillow>=10",
     "datasets>=3.0",
