@@ -192,14 +192,18 @@ def _data_collator(batch):
     return {k: v.unsqueeze(0) if v.dim() < 4 else v for k, v in batch[0].items()}
 
 
+def _patch_transformers_for_llmcompressor() -> None:
+    """Install backwards-compat shims on transformers 5.x that llmcompressor
+    still calls into. Idempotent. See reference_llmcompressor_install memory
+    entry for context."""
+    _patch_transformers_torch_init_functions()
+    _patch_pretrained_model_get_no_split_modules()
+
+
 def _patch_transformers_torch_init_functions() -> None:
     """transformers>=5.5 dropped the public `TORCH_INIT_FUNCTIONS` mapping that
-    llmcompressor.utils.dev.skip_weights_initialize imports. The mapping is
-    cheap to reconstruct from torch.nn.init, so we install it on
-    transformers.modeling_utils before importing llmcompressor. This is a
-    runtime shim only — the resolution lands upstream when llmcompressor
-    catches up to transformers 5.x. See reference_llmcompressor_install
-    memory entry for context."""
+    llmcompressor.utils.dev.skip_weights_initialize imports. Reconstruct from
+    torch.nn.init."""
     import torch.nn as nn
     import transformers.modeling_utils as tmu
 
@@ -221,6 +225,32 @@ def _patch_transformers_torch_init_functions() -> None:
         "kaiming_uniform": nn.init.kaiming_uniform,
         "kaiming_normal": nn.init.kaiming_normal,
     }
+
+
+def _patch_pretrained_model_get_no_split_modules() -> None:
+    """transformers>=5.5 removed `PreTrainedModel._get_no_split_modules`, but
+    the underlying `_no_split_modules` class attribute survives. llmcompressor
+    still calls the getter, so we install a faithful backport that aggregates
+    `_no_split_modules` across the top-level model and any nested
+    PreTrainedModel children (relevant for VLMs like Gemma 4)."""
+    from transformers import PreTrainedModel
+
+    if hasattr(PreTrainedModel, "_get_no_split_modules"):
+        return
+
+    def _get_no_split_modules(self, device_map=None):
+        no_split: set[str] = set()
+        to_check = [self]
+        while to_check:
+            module = to_check.pop()
+            if module.__class__.__name__ in no_split:
+                continue
+            if isinstance(module, PreTrainedModel) and module._no_split_modules is not None:
+                no_split |= set(module._no_split_modules)
+            to_check.extend(module.children())
+        return list(no_split)
+
+    PreTrainedModel._get_no_split_modules = _get_no_split_modules
 
 
 def main() -> None:
@@ -259,7 +289,7 @@ def main() -> None:
     import torch
     from transformers import AutoProcessor, AutoModelForImageTextToText
 
-    _patch_transformers_torch_init_functions()
+    _patch_transformers_for_llmcompressor()
 
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import GPTQModifier
