@@ -33,8 +33,12 @@ dev = ["pytest>=8", "ruff>=0.6"]
 # toolkit is confirmed by pre-flight (see docs/stage1_plan.md).
 quant = [
     "bitsandbytes>=0.43",
-    "llmcompressor>=0.5",
-    "compressed-tensors>=0.7",
+    # llmcompressor PyPI 0.10.0.2 imports TORCH_INIT_FUNCTIONS from
+    # transformers.modeling_utils (4.x path) with no fallback. The shim
+    # for transformers 5.x (`from transformers.initialization import ...`)
+    # only exists on `main`. Pin to git+main until a release ships it.
+    "llmcompressor @ git+https://github.com/vllm-project/llm-compressor@main",
+    "compressed-tensors>=0.14",
 ]
 
 [project.scripts]
