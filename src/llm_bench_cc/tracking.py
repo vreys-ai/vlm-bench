@@ -92,11 +92,21 @@ class CarbonTracker:
             logger.warning("codecarbon not installed; energy tracking disabled")
             return
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+        # log_level="error": the WARNING-level lines codecarbon emits at
+        # tracker.start() on Colab are all "couldn't measure precisely,
+        # falling back to estimation" notices for known-degraded modes —
+        # virtualized VM (no RAPL), generic Xeon (not in codecarbon's TDP
+        # DB), transient geo-lookup failure (backup API resolves it). None
+        # are actual measurement failures, and on a VLM workload GPU energy
+        # (via pynvml — works fine on Colab) dominates total joules. Bumping
+        # to ERROR silences all six known lines while still surfacing real
+        # tracker problems. CPU-energy precision trade-off is documented in
+        # configs/config.yaml under `carbon:`.
         common_kwargs = dict(
             project_name=project_name,
             output_dir=output_dir,
             output_file=f"emissions_{project_name}.csv",
-            log_level="warning",
+            log_level="error",
             measure_power_secs=cfg.carbon.measure_power_secs,
             save_to_file=True,
             allow_multiple_runs=True,

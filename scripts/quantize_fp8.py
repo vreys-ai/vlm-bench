@@ -82,9 +82,16 @@ def _git_sha(repo_root: Path) -> str:
 def _enable_verbose_hf_logging() -> None:
     """Bump HF-stack loggers to INFO so each shard download lands in cell
     output as a normal log line. Colab notebooks routinely fail to render
-    tqdm progress bars, which makes long downloads look hung."""
+    tqdm progress bars, which makes long downloads look hung.
+
+    Pin httpx/httpcore to WARNING: huggingface_hub uses httpx under the hood,
+    and at INFO httpx emits one line per HTTP request (`HTTP/1.1 200 OK`).
+    With dozens of shard range-reads per download that drowns out the actual
+    HF-stack progress lines we DO want to see."""
     for name in ("huggingface_hub", "transformers", "datasets", "filelock"):
         logging.getLogger(name).setLevel(logging.INFO)
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _patch_transformers_torch_init_functions() -> None:

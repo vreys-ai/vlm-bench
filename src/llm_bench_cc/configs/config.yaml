@@ -19,8 +19,17 @@ wandb:
 
 carbon:
   enabled: true
-  country_iso_code: null   # auto-detect via CodeCarbon
+  # null = let codecarbon resolve via geo-IP. Backup API is reliable; the
+  # primary's transient failures are silenced (see tracking.py log_level note).
+  # Set explicitly (e.g. "USA", "FRA") to skip the lookup entirely if needed.
+  country_iso_code: null
   measure_power_secs: 5
+  # Known precision caveat on Colab: CPU energy is TDP-estimated rather than
+  # RAPL-measured (virtualized VM has no /sys/class/powercap/intel-rapl access)
+  # and the Xeon @ 2.20 GHz isn't in codecarbon's TDP DB so it falls back to a
+  # constant. GPU energy (via pynvml) is unaffected and dominates VLM workloads.
+  # All six related WARNING lines are suppressed at tracker init — re-enable by
+  # changing tracking.py's log_level to "warning" if running on bare-metal.
 
 # Inference-time runtime knobs. Cheap memory-hygiene levers for tight GPUs.
 runtime:
