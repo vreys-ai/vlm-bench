@@ -44,7 +44,9 @@ Run:
 
 Output layout:
     <output-dir>/
-        config.json, tokenizer.*, processor_config.json, *.safetensors
+        config.json, tokenizer.*, processor_config.json,
+        preprocessor_config.json, generation_config.json,
+        chat_template.jinja, *.safetensors
         quant_recipe.json   # provenance: git SHA, scheme, source
 """
 
@@ -125,6 +127,37 @@ def _patch_transformers_torch_init_functions() -> None:
     }
 
 
+def _pull_processor_aux_files(model_id: str, output_dir: Path) -> None:
+    """Copy multimodal processor configs from the source repo into the save
+    dir. `model_free_ptq` propagates `config.json`, `tokenizer.*`,
+    `processor_config.json`, `chat_template.jinja`, and `generation_config.json`
+    but NOT `preprocessor_config.json` (image processor) or any audio
+    processor file. Without those, downstream `AutoProcessor.from_pretrained`
+    on the local dir falls through to a Hub call with the local path as
+    repo_id → HFValidationError. Best-effort: missing files in the source
+    repo are skipped silently (the model variant might not have them)."""
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError
+
+    aux_files = [
+        "preprocessor_config.json",      # image processor
+        "audio_processor_config.json",   # audio processor (if separate)
+        "special_tokens_map.json",       # sometimes embedded in tokenizer_config.json
+    ]
+    for fname in aux_files:
+        try:
+            src = hf_hub_download(repo_id=model_id, filename=fname)
+        except EntryNotFoundError:
+            logger.info("  - %s not present in source repo, skipping", fname)
+            continue
+        except Exception as e:  # noqa: BLE001 — many error types possible
+            logger.warning("  - %s fetch failed (%s: %s), skipping", fname, type(e).__name__, e)
+            continue
+        dst = output_dir / fname
+        dst.write_bytes(Path(src).read_bytes())
+        logger.info("  - copied %s", fname)
+
+
 def _check_auth(model_id: str) -> None:
     """Verify HF auth before any download. gemma-4-E4B-it is currently
     *not* gated, but a misconfigured token can still manifest as a silent
@@ -172,11 +205,11 @@ def main() -> None:
     logger.info("[1/2] Verifying HF auth ...")
     _check_auth(args.model_id)
 
-    # [2/2] Run model-free PTQ. This downloads the safetensors shards (if
+    # [2/3] Run model-free PTQ. This downloads the safetensors shards (if
     # not already cached), quantizes weights per-tensor on `device`, and
     # writes new safetensors to `save_directory`. No PyTorch model is
     # ever instantiated and no forward pass runs.
-    logger.info("[2/2] Running model_free_ptq (scheme=%s) on %s -> %s",
+    logger.info("[2/3] Running model_free_ptq (scheme=%s) on %s -> %s",
                 SCHEME, args.model_id, args.output_dir)
     model_free_ptq(
         model_stub=args.model_id,
@@ -186,6 +219,16 @@ def main() -> None:
         max_workers=args.max_workers,
         device=args.device,
     )
+
+    # [3/3] Pull the multimodal-processor aux files that model_free_ptq
+    # doesn't propagate. Without them, AutoProcessor.from_pretrained on the
+    # save dir falls through to a Hub call with the local path as repo_id
+    # and crashes with HFValidationError. Fetch them once now so the saved
+    # checkpoint is self-contained for downstream load. Files are tiny
+    # (KB-range) and snapshot_download is no-op-fast for ones already in
+    # the HF cache from step [2/3].
+    logger.info("[3/3] Adding multimodal processor aux files to %s", args.output_dir)
+    _pull_processor_aux_files(args.model_id, args.output_dir)
 
     recipe_payload = {
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),

@@ -124,8 +124,18 @@ def load_model(cfg) -> LoadedModel:
     dtype = getattr(torch, cfg.dtype)
     cache_dir = cfg.get("cache_dir", None)
     local_files_only = cfg.get("local_files_only", False)
+    # The processor (tokenizer + image processor + audio processor + chat
+    # template) can come from a different source than the weights. This
+    # matters for compressed-tensors checkpoints saved by llmcompressor's
+    # `model_free_ptq`: the safetensors + config.json land in `hf_id`, but
+    # multimodal processor files (preprocessor_config.json, etc.) are not
+    # always propagated from the source snapshot, and a missing file in the
+    # local dir falls through to a Hub call with the local path as repo_id
+    # → HFValidationError. Default `processor_id` to `hf_id` (so the bf16
+    # base path is unchanged); override per-variant to the upstream Hub id.
+    processor_id = cfg.get("processor_id") or cfg.hf_id
     processor = AutoProcessor.from_pretrained(
-        cfg.hf_id,
+        processor_id,
         trust_remote_code=cfg.get("trust_remote_code", False),
         cache_dir=cache_dir,
         local_files_only=local_files_only,
