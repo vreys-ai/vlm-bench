@@ -29,8 +29,8 @@ def _enumerate_non_llm_linear_paths(
 ) -> list[str]:
     """Meta-load the model (zero weights, zero VRAM) and return fully-qualified
     paths of every nn.Linear that is NOT under the LLM subtree. Use as
-    bnb's llm_int8_skip_modules (Tier A) or llmcompressor's GPTQModifier
-    `ignore` (Tier B) so the matcher hits each Linear exactly."""
+    bnb's llm_int8_skip_modules (Tier A) or llmcompressor's `ignore`
+    (Tier B) so the matcher hits each Linear exactly."""
     from accelerate import init_empty_weights
 
     auto_kwargs: dict[str, Any] = {
@@ -81,16 +81,17 @@ def _build_quant_config(quant_cfg, skip_modules: list[str]):
     the `quant` extra to be installed.
 
     Returns None for backends whose checkpoint already ships its own
-    quantization config in `config.json` (e.g. GPTQ-W4A16 saved by
+    quantization config in `config.json` (e.g. FP8_BLOCK / W4A16 saved by
     llmcompressor as compressed-tensors). Those load via plain
     from_pretrained — passing a second config would conflict.
     """
     backend = quant_cfg.get("backend")
-    if backend == "gptq":
+    if backend == "compressed_tensors":
         return None
     if backend != "bnb":
         raise ValueError(
-            f"Unsupported quant backend {backend!r}; expected 'bnb' or 'gptq'."
+            f"Unsupported quant backend {backend!r}; "
+            f"expected 'bnb' or 'compressed_tensors'."
         )
 
     from transformers import BitsAndBytesConfig
@@ -161,14 +162,15 @@ def load_model(cfg) -> LoadedModel:
             qc = _build_quant_config(quant_cfg, skip_modules)
             if qc is not None:
                 quant_kwargs["quantization_config"] = qc
-        elif quant_backend == "gptq":
+        elif quant_backend == "compressed_tensors":
             # The pre-quantized checkpoint at cfg.hf_id ships its own
             # compressed-tensors config; transformers + compressed-tensors
             # auto-instantiate it on from_pretrained. Nothing to inject here.
             pass
         else:
             raise ValueError(
-                f"Unsupported quant backend {quant_backend!r}; expected 'bnb' or 'gptq'."
+                f"Unsupported quant backend {quant_backend!r}; "
+                f"expected 'bnb' or 'compressed_tensors'."
             )
 
         logger.info("Quantization enabled: backend=%s mode=%s", quant_backend, quant_mode)

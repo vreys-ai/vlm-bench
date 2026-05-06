@@ -225,6 +225,6 @@ python -m llm_bench_cc.cli eval.datasets.caption.hf_id=<other-dataset>
 | Stage | Goal | Status |
 |---|---|---|
 | 0. Eval harness + bf16 baseline | Honest retention denominator on L4 | Done — bf16 baseline locked 2026-05-01 |
-| 1. Quantization sweep | Cut weights/energy with minimal retention loss (bnb-int8/nf4, GPTQ-4, AWQ-4, GGUF-Q4_K_M/Q5_K_M) | Tier A (bnb-int8 / bnb-nf4) shipped; Tier B/C pending pre-flight |
+| 1. Quantization sweep | Cut weights/energy with minimal retention loss (bnb-int8/nf4, FP8_BLOCK / W4A16 via llmcompressor, GGUF-Q4_K_M/Q5_K_M) | Tier A (bnb-int8 / bnb-nf4) shipped; Tier B partial (FP8_BLOCK ckpt produced via `scripts/quantize_fp8.py`, retention not yet measured); Tier C pending |
 | 2. Pruning + Distillation | Shrink architecture, recover capability | Pending Stage 1 winner |
 | 3. Best-of-stack | Combine pruned → distilled → quantized | Pending Stage 2 |

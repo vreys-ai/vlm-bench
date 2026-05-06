@@ -10,7 +10,7 @@ dependencies = [
     # >=4.56.1 picks up Gemma 3n / "gemma-4-E4B-it" arch support. No upper
     # bound: Tier B (llmcompressor) needs transformers 5.x at runtime, and
     # we let the install-time `uv pip --override` force whichever 5.x the
-    # llmcompressor main shim expects. See scripts/quantize_gptq.py docstring.
+    # llmcompressor main shim expects. See scripts/quantize_fp8.py docstring.
     "transformers>=4.56.1",
     "accelerate>=0.34",
     "Pillow>=10",
@@ -29,11 +29,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 # Stage 1 Tier A: bitsandbytes int8 / nf4 (runtime-only, no calibration).
-# Stage 1 Tier B: GPTQ-W4A16 via llmcompressor + post-install transformers 5.x.
+# Stage 1 Tier B: FP8_BLOCK (and other compressed-tensors schemes) via
+#   llmcompressor + post-install transformers 5.x.
 #   llmcompressor is INTENTIONALLY NOT listed here — its setup.py pins
 #   transformers <= 4.57.6 while runtime needs >= 5.5 for Gemma 4, and
 #   resolving the conflict inside a single pip transaction is fragile.
-#   Install it manually after the project is in place; see scripts/quantize_gptq.py
+#   Install it manually after the project is in place; see scripts/quantize_fp8.py
 #   docstring for the exact commands. compressed-tensors is also installed
 #   transitively by llmcompressor's manual install.
 # Tier C (GGUF via llama-cpp-python) extras will land when that tier's
