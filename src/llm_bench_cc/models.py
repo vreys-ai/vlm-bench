@@ -173,10 +173,35 @@ def load_model(cfg) -> LoadedModel:
             if qc is not None:
                 quant_kwargs["quantization_config"] = qc
         elif quant_backend == "compressed_tensors":
-            # The pre-quantized checkpoint at cfg.hf_id ships its own
-            # compressed-tensors config; transformers + compressed-tensors
-            # auto-instantiate it on from_pretrained. Nothing to inject here.
-            pass
+            # Force run_compressed=True so CompressedTensorsHfQuantizer skips
+            # the post-load decompress_model() call. With run_compressed=False
+            # (which the saved config.json from `model_free_ptq` doesn't pin
+            # either way, and whose transformers default has flipped between
+            # versions), `_process_model_after_weight_loading` materializes
+            # bf16 weights in VRAM at load — erasing every memory benefit of
+            # quantization before the first forward.
+            #
+            # We rebuild from the saved scheme info rather than constructing
+            # CompressedTensorsConfig(run_compressed=True) bare: post_init()
+            # auto-flips run_compressed back to False when the inner
+            # QuantizationConfig is empty (no config_groups -> not
+            # is_quantization_compressed -> flag disabled with a warning).
+            from transformers import CompressedTensorsConfig
+
+            base_config = AutoConfig.from_pretrained(
+                cfg.hf_id,
+                trust_remote_code=cfg.get("trust_remote_code", False),
+                cache_dir=cache_dir,
+                local_files_only=local_files_only,
+            )
+            saved_qcfg = base_config.to_dict().get("quantization_config") or {}
+            saved_qcfg = {**saved_qcfg, "run_compressed": True}
+            quant_kwargs["quantization_config"] = CompressedTensorsConfig(
+                **saved_qcfg
+            )
+            logger.info(
+                "compressed_tensors: forcing run_compressed=True to keep weights packed at runtime"
+            )
         else:
             raise ValueError(
                 f"Unsupported quant backend {quant_backend!r}; "
