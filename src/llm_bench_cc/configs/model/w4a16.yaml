@@ -7,7 +7,7 @@
 #
 # This config does NOT trigger quantization at load time — it points at a
 # pre-quantized local checkpoint whose `config.json` carries its own
-# compressed-tensors block. `models.load_model` reads that block, forces
+# compressed-tensors block. `backends.hf.HFBackend` reads that block, forces
 # `run_compressed=True`, and passes it back to `from_pretrained` so the
 # quantizer keeps weights packed.
 #
