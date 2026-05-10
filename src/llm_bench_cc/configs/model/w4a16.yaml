@@ -1,0 +1,35 @@
+# W4A16 quantized gemma-4-E4B-it produced offline by scripts/quantize_fp8.py
+# (Neural Magic llmcompressor `model_free_ptq`, compressed-tensors save format,
+# data-free RTN). Routes at inference time through marlin / gptq-marlin kernels
+# bundled in compressed-tensors — packed int4 weights stay in VRAM through the
+# forward pass, unlike FP8_BLOCK which has no eager-mode kernel in this stack
+# and falls back to dequant-on-first-forward (giving zero VRAM win).
+#
+# This config does NOT trigger quantization at load time — it points at a
+# pre-quantized local checkpoint whose `config.json` carries its own
+# compressed-tensors block. `models.load_model` reads that block, forces
+# `run_compressed=True`, and passes it back to `from_pretrained` so the
+# quantizer keeps weights packed.
+#
+# Override `hf_id` on the CLI to match wherever you saved the checkpoint, e.g.:
+#   model=w4a16 model.hf_id=/mnt/ssd/llm-bench-cc/quant/gemma-4-E4B-it-W4A16
+defaults:
+  - base
+  - _self_
+
+name: w4a16
+hf_id: /tmp/llm-bench-cc/quant/gemma-4-E4B-it-W4A16   # local SSD path; override per-VM as needed
+# Processor (tokenizer + image/audio processor + chat template) loads from the
+# upstream Hub repo, not the quantized save dir. `model_free_ptq` doesn't
+# always propagate every multimodal aux file (preprocessor_config.json etc.),
+# and a missing file in the local dir triggers `HFValidationError: Repo id
+# must be in the form 'repo_name'/...` from a fallback Hub call. Pulling the
+# processor from upstream is small, cached, and avoids the issue entirely.
+processor_id: google/gemma-4-E4B-it
+dtype: bfloat16   # compute dtype for activations + unquantized layers (vision/audio/embeds/lm_head). Marlin kernels accept bf16 activations against packed int4 weights.
+
+quant:
+  backend: compressed_tensors
+  mode: w4a16
+  # `targets` / `ignore` / `scheme` live in the saved checkpoint's
+  # compressed-tensors config — recorded here for run-summary provenance only.
