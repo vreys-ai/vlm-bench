@@ -18,7 +18,7 @@ Why W4A16 (vs the FP8_BLOCK that quantize_fp8.py produces):
 
     W4A16 routes through the bundled marlin / gptq-marlin kernels that
     consume packed int4 weights against bf16 activations directly. With
-    `run_compressed=True` (forced in `llm_bench_cc.models.load_model`),
+    `run_compressed=True` (forced in `llm_bench_cc.backends.hf.HFBackend`),
     LLM Linears stay packed in VRAM through the forward pass — the
     well-trodden path for inference-time int4 in HF transformers.
 

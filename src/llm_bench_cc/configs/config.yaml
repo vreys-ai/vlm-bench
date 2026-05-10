@@ -33,9 +33,16 @@ carbon:
 
 # Inference-time runtime knobs. Cheap memory-hygiene levers for tight GPUs.
 runtime:
+  backend: hf                        # hf | vllm. Selects the inference stack.
   image_max_side: 512                # cap longest image side before processor; null disables
-  empty_cache_between_samples: true  # torch.cuda.empty_cache() after each sample
+  empty_cache_between_samples: true  # torch.cuda.empty_cache() after each sample (HF backend only — vLLM owns its own cache)
   cleanup_dataset_after_task: false  # rmtree the HF cache for each dataset once its task finishes; opt-in for tight-disk Colab VMs
+  # vLLM-specific knobs, consumed only when backend == vllm.
+  vllm:
+    gpu_memory_utilization: 0.9      # fraction of VRAM vLLM allocates for the KV cache pool. Smaller -> weights dominate peak_vram (but crashes if too small to fit the model).
+    limit_mm_per_prompt:             # multimodal slot counts per prompt.
+      image: 1
+      audio: 0
 
 hydra:
   run:

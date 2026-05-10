@@ -14,8 +14,8 @@ from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from tqdm import tqdm
 
+from .backends import Backend, load_backend
 from .composite import composite_score, retention_ratios
-from .models import LoadedModel, load_model
 from .tasks.base import Prediction, Sample
 from .tasks.registry import get_task
 from .tracking import CarbonTracker, WandbRun
@@ -46,44 +46,17 @@ def _maybe_resize(image: Image.Image, max_side: int | None) -> Image.Image:
 
 
 def _generate_one(
-    loaded: LoadedModel,
+    backend: Backend,
     image,
     prompt: str,
     gen_kwargs: dict[str, Any],
     image_max_side: int | None,
 ) -> tuple[str, float]:
     image = _maybe_resize(image, image_max_side)
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": prompt},
-        ],
-    }]
-    inputs = loaded.processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        tokenize=True,
-        return_dict=True,
-        return_tensors="pt",
-    ).to(loaded.device)
-
-    in_len = inputs["input_ids"].shape[-1]
-
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    with torch.no_grad():
-        out = loaded.model.generate(**inputs, **gen_kwargs)
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-
-    text = loaded.processor.decode(out[0][in_len:], skip_special_tokens=True).strip()
-    return text, elapsed_ms
+    return backend.generate(image, prompt, gen_kwargs)
 
 
-def _run_task(loaded, task_name, ds_cfg, n, seed, gen_kwargs, out_dir, carbon_cfg, run_name, runtime_cfg):
+def _run_task(backend, task_name, ds_cfg, n, seed, gen_kwargs, out_dir, carbon_cfg, run_name, runtime_cfg):
     task = get_task(task_name)
     samples: list[Sample] = task.load(n=n, seed=seed, ds_cfg=ds_cfg)
     if not samples:
@@ -97,8 +70,7 @@ def _run_task(loaded, task_name, ds_cfg, n, seed, gen_kwargs, out_dir, carbon_cf
         enabled=carbon_cfg.enabled,
     )
 
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
+    backend.reset_peak_vram()
 
     image_max_side = runtime_cfg.get("image_max_side", None)
     empty_cache = bool(runtime_cfg.get("empty_cache_between_samples", False))
@@ -107,17 +79,14 @@ def _run_task(loaded, task_name, ds_cfg, n, seed, gen_kwargs, out_dir, carbon_cf
     preds: list[Prediction] = []
     latencies: list[float] = []
     for s in tqdm(samples, desc=task_name, leave=False):
-        text, ms = _generate_one(loaded, s.image, s.prompt, gen_kwargs, image_max_side)
+        text, ms = _generate_one(backend, s.image, s.prompt, gen_kwargs, image_max_side)
         preds.append(Prediction(sample_id=s.sample_id, prediction=text, latency_ms=ms))
         latencies.append(ms)
         if empty_cache and torch.cuda.is_available():
             torch.cuda.empty_cache()
     emissions = carbon.stop()
 
-    peak_vram_gb = (
-        torch.cuda.max_memory_allocated() / 1e9
-        if torch.cuda.is_available() else 0.0
-    )
+    peak_vram_gb = backend.peak_vram_gb()
 
     scores = task.score(samples, preds)
     primary_value = scores[task.primary_metric]
@@ -154,7 +123,7 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
     wb = WandbRun(cfg, full_config) if cfg.wandb.mode != "disabled" else None
 
     logger.info("Loading model %s (dtype=%s)", cfg.model.hf_id, cfg.model.dtype)
-    loaded = load_model(cfg.model)
+    backend = load_backend(cfg)
 
     base_gen_kwargs = dict(
         max_new_tokens=cfg.model.generation.max_new_tokens,
@@ -182,7 +151,7 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
         task_overrides = all_overrides.get(task_name) or {}
         task_gen_kwargs = {**base_gen_kwargs, **dict(task_overrides)}
         result = _run_task(
-            loaded=loaded,
+            backend=backend,
             task_name=task_name,
             ds_cfg=ds_cfg,
             n=cfg.eval.samples_per_task,
@@ -211,12 +180,12 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
         ratios = {t: 1.0 for t in primaries}
         baseline_payload = {
             "run_name": cfg.run_name,
-            "model": loaded.name,
-            "hf_id": loaded.hf_id,
-            "dtype": str(loaded.dtype),
-            "device": str(loaded.device),
-            "quant_backend": loaded.quant_backend,
-            "quant_mode": loaded.quant_mode,
+            "model": backend.name,
+            "hf_id": backend.hf_id,
+            "dtype": str(backend.dtype),
+            "device": str(backend.device),
+            "quant_backend": backend.quant_backend,
+            "quant_mode": backend.quant_mode,
             "primaries": primaries,
             "all_metrics": all_metrics,
         }
@@ -234,12 +203,12 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
 
     summary = {
         "run_name": cfg.run_name,
-        "model": loaded.name,
-        "hf_id": loaded.hf_id,
-        "dtype": str(loaded.dtype),
-        "device": str(loaded.device),
-        "quant_backend": loaded.quant_backend,
-        "quant_mode": loaded.quant_mode,
+        "model": backend.name,
+        "hf_id": backend.hf_id,
+        "dtype": str(backend.dtype),
+        "device": str(backend.device),
+        "quant_backend": backend.quant_backend,
+        "quant_mode": backend.quant_mode,
         "is_baseline": is_baseline,
         "composite": composite,
         "retention_ratios": ratios,
