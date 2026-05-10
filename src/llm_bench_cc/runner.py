@@ -120,10 +120,20 @@ def run_eval(cfg: DictConfig) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     full_config = OmegaConf.to_container(cfg, resolve=True)
-    wb = WandbRun(cfg, full_config) if cfg.wandb.mode != "disabled" else None
 
     logger.info("Loading model %s (dtype=%s)", cfg.model.hf_id, cfg.model.dtype)
     backend = load_backend(cfg)
+
+    # wandb.init() AFTER backend load: wandb's default console=auto mode on
+    # Linux uses os.dup2 to redirect stdout/stderr to pipes its reader thread
+    # drains. The vLLM backend spawns an EngineCore subprocess that inherits
+    # those redirected fds; if wandb's reader stalls, the child fills the pipe
+    # buffer (~64 KB) and deadlocks on its next write — symptom is vLLM hanging
+    # mid-load right after the attention-backend log lines. Initializing wandb
+    # after the worker is up means the child inherited the original tty fds
+    # and is unaffected. HF backend is single-process so the order doesn't
+    # matter for it; only vLLM is sensitive.
+    wb = WandbRun(cfg, full_config) if cfg.wandb.mode != "disabled" else None
 
     base_gen_kwargs = dict(
         max_new_tokens=cfg.model.generation.max_new_tokens,
