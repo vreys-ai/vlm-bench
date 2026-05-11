@@ -1,7 +1,5 @@
-"""Two-spike feasibility check for moving the harness to vLLM.
-
-Before committing to a vLLM backend abstraction in `llm_bench_cc`, we need
-two go/no-go signals on a real L4:
+"""Feasibility-spike harness for vLLM. One timed multimodal generation per run;
+swap flags for each spike.
 
   Spike 1 — bf16 throughput on gemma-4-E4B-it. There is a known Ada-generation
   perf cliff for this model in vLLM (issue #38887): heterogeneous attention
@@ -17,8 +15,14 @@ two go/no-go signals on a real L4:
   own AutoFP8 path) is undocumented; quickest answer is to point it at
   the checkpoint and watch the load.
 
-This script does ONE timed multimodal generation per invocation. Run it
-twice — once on the Hub bf16 model, once on the local FP8_BLOCK save dir.
+  Spike 3 — bnb 4-bit (NF4) acceptance on a multimodal model. vLLM's bnb
+  docs are text-LLM-flavored and don't say whether the loader works on
+  gemma-4-E4B-it, nor whether there's a skip-modules hook to keep the
+  vision/audio towers in bf16 (HF backend's _enumerate_non_llm_linear_paths
+  does that explicitly). Pass `--quantization bitsandbytes` to find out.
+  Watch peak VRAM: bf16 baseline is ~10 GB; if the LLM portion actually
+  gets 4-bit'd we'd expect roughly 4–6 GB. A near-bf16 number means the
+  loader silently fell back; a crash means the model arch isn't supported.
 
 Install on a fresh Colab L4 (vLLM pins its own torch/CUDA — DO NOT install
 into the llm-bench-cc venv):
@@ -33,6 +37,9 @@ Run:
     # Spike 2 — FP8_BLOCK acceptance (after running quantize_fp8.py):
     python scripts/vllm_spike.py \
         --model-path /tmp/llm-bench-cc/quant/gemma-4-E4B-it-FP8_BLOCK
+
+    # Spike 3 — bnb 4-bit (NF4) acceptance, in-flight quantization:
+    python scripts/vllm_spike.py --quantization bitsandbytes
 
 Eyeball the vLLM startup logs for `TRITON_ATTN` — that's the marker for
 the perf-cliff bug. tok/s and peak VRAM are printed at the end.
@@ -109,6 +116,9 @@ def main() -> None:
     parser.add_argument("--dtype", default="bfloat16",
                         help="Per the Gemma 4 recipe, bf16. Override only for debug.")
     parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--quantization", default=None,
+                        help="vLLM quantization name (e.g. 'bitsandbytes'). "
+                             "Omit for full-precision / auto-detected loads.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -126,11 +136,16 @@ def main() -> None:
 
     # limit_mm_per_prompt: image=1 is enough for the smoke; audio=0 avoids
     # allocating audio-tower buffers we don't exercise here.
-    llm = LLM(
+    llm_kwargs = dict(
         model=args.model_path,
         dtype=args.dtype,
         limit_mm_per_prompt={"image": 1, "audio": 0},
     )
+    if args.quantization:
+        # In-flight quantization path. For pre-quantized checkpoints vLLM
+        # auto-detects from config.json and this flag is unnecessary.
+        llm_kwargs["quantization"] = args.quantization
+    llm = LLM(**llm_kwargs)
 
     image = _make_test_image()
     conversation = [{
