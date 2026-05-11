@@ -198,7 +198,11 @@ class VLLMBackend:
         sampling = SamplingParams(max_tokens=max_tokens, temperature=temperature)
 
         t0 = time.perf_counter()
-        outputs = self._llm.chat(conversation, sampling_params=sampling)
+        # use_tqdm=False suppresses vLLM's per-call progress bar — at one bar
+        # per sample, an N=200 task floods Colab's output renderer and freezes
+        # the cell display. The runner's outer tqdm (one bar per task) is
+        # plenty signal.
+        outputs = self._llm.chat(conversation, sampling_params=sampling, use_tqdm=False)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
         text = outputs[0].outputs[0].text.strip()
