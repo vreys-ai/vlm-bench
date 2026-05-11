@@ -24,6 +24,15 @@ swap flags for each spike.
   gets 4-bit'd we'd expect roughly 4–6 GB. A near-bf16 number means the
   loader silently fell back; a crash means the model arch isn't supported.
 
+  Spike 4 — FP8 W8A8 (E4M3, in-flight) acceptance on a multimodal model.
+  Same shape as Spike 3 but for vLLM's `quantization="fp8"` path (per-tensor
+  static weight scales + dynamic per-tensor activation scales; auto-skips
+  lm_head per docs). Pass `--quantization fp8`. The cleaner signal here is
+  the vLLM startup log line "Model loading took X GiB memory" (peak_vram_gb
+  from this harness is dominated by vLLM's default gpu_memory_utilization
+  pool, not weights). On gemma-4-E4B-it (2026-05-11 spike) it read 10.93 GiB
+  — multimodal towers and embeddings empirically stay bf16. Requires sm_89+.
+
 Install on a fresh Colab L4 (vLLM pins its own torch/CUDA — DO NOT install
 into the llm-bench-cc venv):
 
@@ -40,6 +49,9 @@ Run:
 
     # Spike 3 — bnb 4-bit (NF4) acceptance, in-flight quantization:
     python scripts/vllm_spike.py --quantization bitsandbytes
+
+    # Spike 4 — FP8 W8A8 (E4M3) acceptance, in-flight quantization:
+    python scripts/vllm_spike.py --quantization fp8
 
 Eyeball the vLLM startup logs for `TRITON_ATTN` — that's the marker for
 the perf-cliff bug. tok/s and peak VRAM are printed at the end.

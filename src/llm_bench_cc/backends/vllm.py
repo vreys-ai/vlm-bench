@@ -3,8 +3,9 @@
 Loads the model into vLLM's `LLM` engine and generates via `llm.chat()` with
 the model's chat template. Validated on gemma-4-E4B-it bf16 and FP8_BLOCK
 (compressed-tensors checkpoints from `llmcompressor.model_free_ptq`) on
-2026-05-10, and on bnb 4-bit NF4 (in-flight quantization) on 2026-05-11 —
-see scripts/vllm_spike.py for the spikes that produced the numbers.
+2026-05-10, and on bnb 4-bit NF4 + FP8 W8A8 (both in-flight quantization)
+on 2026-05-11 — see scripts/vllm_spike.py for the spikes that produced the
+numbers.
 
 Three runtime quirks worth knowing:
 
@@ -104,6 +105,13 @@ class VLLMBackend:
       * bnb (nf4) — in-flight quantization at load time; we forward
         `quantization="bitsandbytes"` to LLM(). vLLM's bnb loader has no
         skip-modules hook, so this applies to every Linear in the model.
+      * vllm_fp8 (fp8_w8a8) — in-flight dynamic FP8_E4M3 at load time; we
+        forward `quantization="fp8"` to LLM(). Per-tensor static weight
+        scales + dynamic per-tensor activation scales. vLLM auto-skips
+        `lm_head`; on gemma-4-E4B-it the multimodal towers and embeddings
+        empirically also stay in bf16 (spike load-log: "Model loading took
+        10.93 GiB" vs ~16 GiB for bf16 — only adds up if non-Linear modules
+        weren't touched). Requires sm_89+ (Ada Lovelace, Hopper, ...).
     """
 
     def __init__(self, model_cfg, vllm_cfg) -> None:
@@ -135,6 +143,8 @@ class VLLMBackend:
         extra_llm_kwargs: dict[str, Any] = {}
         if self.quant_backend == "bnb":
             extra_llm_kwargs["quantization"] = "bitsandbytes"
+        elif self.quant_backend == "vllm_fp8":
+            extra_llm_kwargs["quantization"] = "fp8"
 
         logger.info("Loading via vLLM: %s (dtype=%s, gpu_memory_utilization=%.2f, quantization=%s)",
                     model_cfg.hf_id, dtype_str, gpu_mem_util,
