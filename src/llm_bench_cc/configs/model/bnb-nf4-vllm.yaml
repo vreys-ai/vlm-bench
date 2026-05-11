@@ -1,0 +1,31 @@
+# bitsandbytes NF4 4-bit served through vLLM via in-flight quantization at load.
+#
+# Unlike `bnb-nf4` (HF backend), there is NO skip-modules path here: vLLM's
+# bitsandbytes loader has no exposed hook to keep the vision / audio towers
+# unquantized, so every Linear it can pattern-match gets 4-bit'd. Composite
+# drift vs the HF variant on the same eval will partly reflect that scope
+# difference — record it in docs/stage1_plan.md if it matters.
+#
+# This config does NOT pre-quantize the model; vLLM does it in-flight from the
+# Hub bf16 checkpoint via the `quantization="bitsandbytes"` constructor arg
+# (wired in backends/vllm.py).
+#
+# The variant deliberately does not override `runtime.backend` (Hydra doesn't
+# touch top-level keys from a sub-config without a `_global_` package
+# directive, and the other quant variants don't either). Invoke with both:
+#   python -m llm_bench_cc model=bnb-nf4-vllm runtime.backend=vllm eval=smoke \
+#       baseline_path=<path-to-bf16-baseline.json>
+defaults:
+  - base
+  - _self_
+
+name: bnb-nf4-vllm
+dtype: bfloat16   # compute dtype for the model + activations against 4-bit weights
+
+quant:
+  backend: bnb
+  mode: nf4
+  # The HF NF4 variant's bnb_4bit_* knobs (quant_type, double_quant,
+  # compute_dtype, skip_modules) have no analog in vLLM's bitsandbytes loader —
+  # it applies NF4 with built-in defaults to every Linear. Omitted here so the
+  # variant doesn't suggest knobs that wouldn't be honored.

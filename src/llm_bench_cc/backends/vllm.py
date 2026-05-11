@@ -3,13 +3,20 @@
 Loads the model into vLLM's `LLM` engine and generates via `llm.chat()` with
 the model's chat template. Validated on gemma-4-E4B-it bf16 and FP8_BLOCK
 (compressed-tensors checkpoints from `llmcompressor.model_free_ptq`) on
-2026-05-10 — see scripts/vllm_spike.py for the spike that produced the numbers.
+2026-05-10, and on bnb 4-bit NF4 (in-flight quantization) on 2026-05-11 —
+see scripts/vllm_spike.py for the spikes that produced the numbers.
 
-Two runtime quirks worth knowing:
+Three runtime quirks worth knowing:
 
   1. vLLM v1 runs the model in a worker subprocess. `torch.cuda.max_memory_allocated()`
      in the parent process returns 0. Peak VRAM is measured via a background
-     nvidia-smi poller (same pattern as the spike script).
+     nvidia-smi poller (same pattern as the spike script). NB: nvidia-smi sees
+     vLLM's *pre-allocated KV-cache pool*, not the weight footprint — so
+     peak_vram_gb collapses to roughly `gpu_memory_utilization × total_VRAM`
+     regardless of quant. Quant savings in vLLM mode surface as KV-cache
+     headroom (longer seqs, more concurrency), not as a smaller peak_vram_gb.
+     If you need the weights-only number, grep startup logs for "model weights
+     take X GiB".
 
   2. The Ada-generation perf cliff (vLLM issue #38887): gemma-4's heterogeneous
      attention head dims force a TRITON_ATTN fallback that disables FlashAttention.
@@ -17,6 +24,11 @@ Two runtime quirks worth knowing:
      backend"). Empirically ~16 tok/s on L4 — slower than HF eager. The FP8
      story is still a memory + slight throughput win over vLLM bf16; just don't
      expect a speed bonanza vs HF.
+
+  3. vLLM's bitsandbytes loader has no exposed skip-modules hook (unlike the HF
+     backend's `_enumerate_non_llm_linear_paths`). bnb runs in-flight against
+     every Linear it can pattern-match — vision tower included. Composite-vs-HF
+     drift on `bnb-nf4-vllm` will partly reflect that scope difference.
 """
 
 from __future__ import annotations
@@ -84,9 +96,15 @@ class _GpuMemoryPoller:
 class VLLMBackend:
     """vLLM runtime. Reads cfg.model.hf_id (Hub id or local checkpoint dir)
     and cfg.runtime.vllm.* knobs (gpu_memory_utilization, limit_mm_per_prompt).
-    Compressed-tensors checkpoints (FP8_BLOCK, W4A16) load through vLLM's
-    bundled compressed-tensors loader without any extra config — fp8 kernels
-    engage automatically on Ada+ hardware."""
+
+    Quant routing:
+      * compressed_tensors (FP8_BLOCK, W4A16) — vLLM's bundled loader picks
+        these up from the checkpoint's config.json automatically; no extra
+        constructor kwarg needed. fp8 kernels engage on Ada+ hardware.
+      * bnb (nf4) — in-flight quantization at load time; we forward
+        `quantization="bitsandbytes"` to LLM(). vLLM's bnb loader has no
+        skip-modules hook, so this applies to every Linear in the model.
+    """
 
     def __init__(self, model_cfg, vllm_cfg) -> None:
         from omegaconf import OmegaConf
@@ -107,14 +125,27 @@ class VLLMBackend:
         )
         gpu_mem_util = float(vllm_cfg.get("gpu_memory_utilization", 0.9))
 
-        logger.info("Loading via vLLM: %s (dtype=%s, gpu_memory_utilization=%.2f)",
-                    model_cfg.hf_id, dtype_str, gpu_mem_util)
+        # Quant routing happens before LLM construction because bnb needs an
+        # explicit `quantization=` kwarg; compressed_tensors does not (vLLM
+        # auto-detects from the checkpoint's config.json).
+        quant_cfg = model_cfg.get("quant")
+        self.quant_backend = quant_cfg.get("backend") if quant_cfg is not None else None
+        self.quant_mode = quant_cfg.get("mode") if quant_cfg is not None else None
+
+        extra_llm_kwargs: dict[str, Any] = {}
+        if self.quant_backend == "bnb":
+            extra_llm_kwargs["quantization"] = "bitsandbytes"
+
+        logger.info("Loading via vLLM: %s (dtype=%s, gpu_memory_utilization=%.2f, quantization=%s)",
+                    model_cfg.hf_id, dtype_str, gpu_mem_util,
+                    extra_llm_kwargs.get("quantization", "auto"))
 
         self._llm = LLM(
             model=model_cfg.hf_id,
             dtype=dtype_str,
             limit_mm_per_prompt=limit_mm,
             gpu_memory_utilization=gpu_mem_util,
+            **extra_llm_kwargs,
         )
 
         self.name = model_cfg.name
@@ -122,15 +153,6 @@ class VLLMBackend:
         # vLLM is single-GPU here; cuda:0 is accurate for our L4 target.
         # Update if/when we add tensor-parallel.
         self.device = "cuda:0"
-
-        # Surface the same quant_backend / quant_mode strings that the HF
-        # backend reports, so summary.json fields stay schema-stable across
-        # runtimes. The actual scheme detection is delegated to vLLM (which
-        # reads the checkpoint's quantization_config block); we just report
-        # what the cfg.model.quant block declares.
-        quant_cfg = model_cfg.get("quant")
-        self.quant_backend = quant_cfg.get("backend") if quant_cfg is not None else None
-        self.quant_mode = quant_cfg.get("mode") if quant_cfg is not None else None
 
         self._poller = _GpuMemoryPoller()
         self._poller.start()
