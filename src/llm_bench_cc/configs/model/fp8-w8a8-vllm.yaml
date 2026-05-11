@@ -1,0 +1,36 @@
+# FP8 W8A8 (E4M3) served through vLLM via in-flight dynamic quantization at load.
+#
+# vLLM's `quantization="fp8"` path: weights quantized to FP8_E4M3 with a
+# per-tensor scale computed at load; activations get a dynamic per-tensor
+# scale during each forward pass. Auto-skips `lm_head` (per vLLM docs).
+# On gemma-4-E4B-it the multimodal towers (vision, audio) and embeddings
+# also stayed in bf16 empirically (spike 2026-05-11 load-log: 10.93 GiB
+# total vs ~16 GiB for bf16) — better scope than vLLM's bnb path, which
+# has no skip and quantizes every Linear.
+#
+# Requires sm_89+ (Ada Lovelace, Hopper, ...). L4 qualifies.
+#
+# This config does NOT pre-quantize the model; vLLM does it in-flight from
+# the Hub bf16 checkpoint via the `quantization="fp8"` constructor arg
+# (wired in backends/vllm.py).
+#
+# The variant deliberately does not override `runtime.backend` (Hydra doesn't
+# touch top-level keys from a sub-config without a `_global_` package
+# directive, and the other quant variants don't either). Invoke with both:
+#   python -m llm_bench_cc model=fp8-w8a8-vllm runtime.backend=vllm eval=smoke \
+#       baseline_path=<path-to-vllm-bf16-baseline.json>
+defaults:
+  - base
+  - _self_
+
+name: fp8-w8a8-vllm
+dtype: bfloat16   # compute dtype for activations + non-quantized layers (vision/audio towers, embeds, lm_head)
+
+quant:
+  backend: vllm_fp8
+  mode: fp8_w8a8
+  # No knobs to expose — vLLM's in-flight fp8 path uses per-tensor static
+  # weight scales and dynamic per-tensor activation scales by default; no
+  # constructor kwargs to tune. Alternative schemes (E5M2, per-channel,
+  # static activations) require pre-quantized checkpoints, which is a
+  # different routing path (compressed_tensors).
