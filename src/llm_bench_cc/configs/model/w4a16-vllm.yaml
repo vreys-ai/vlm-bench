@@ -1,0 +1,70 @@
+# W4A16 (int4 weights, bf16 activations) served through vLLM via a community-
+# built compressed-tensors checkpoint (cyankiwi/gemma-4-E4B-it-AWQ-INT4).
+#
+# Background: our own llm-compressor `model_free_ptq` W4A16 recipe failed on
+# gemma-4-E4B-it (2026-05-10) — same PLE + KV-sharing wall that took out
+# `oneshot`. As of 2026-05-11 the llm-compressor changelog shows no
+# Gemma-4-E or PLE-aware fix, so re-attempting our own calibration is not
+# productive. The community user `cyankiwi` did succeed at producing a
+# clean compressed-tensors W4A16 of this model; we adopt that checkpoint
+# rather than retry calibration. Full provenance + comparison vs the two
+# Vishva007 (AutoRound) alternatives lives in
+# docs/community-w4a16-analysis.md.
+#
+# Repo name claims "AWQ-INT4" but the checkpoint's config.json reports
+# `quant_method: compressed-tensors`, `format: pack-quantized` — vLLM's
+# bundled compressed-tensors loader auto-detects from config.json and
+# routes through the Marlin int4 kernel. No `quantization=` constructor
+# kwarg needed (same auto-detect path as fp8-block under vLLM).
+#
+# Verified by scripts/spike_cyankiwi_w4a16.py on Colab L4, 2026-05-11:
+#   * Load path: vLLM picked `CompressedTensorsWNA16` and bound it to
+#     `MarlinLinearKernel` automatically.
+#   * Weights footprint: "Model loading took 9.48 GiB memory" vs ~16 GiB
+#     for bf16 baseline (-41%) and 10.93 GiB for fp8-w8a8-vllm (-14%).
+#   * Quantized scope: 259 Linears via `.weight_packed` enumeration —
+#       42 × (q_proj, o_proj, gate_proj, up_proj, down_proj)  = 210
+#       24 × (k_proj, v_proj)  [KV-sharing on 18/42 layers]   =  48
+#       1  × model.language_model.per_layer_model_projection  =   1
+#     PLE per-layer plumbing (per_layer_input_gate, per_layer_projection)
+#     stays in bf16; vision_tower, audio_tower, and lm_head also bf16.
+#   * Multimodal smoke: synthetic image stamped "CYANKIWI SMOKE" decoded
+#     exactly as "CYANKIWI SMOKE" — vision pipeline intact through the
+#     4-bit LM despite text-only calibration of the LM weights.
+#   * Attention backend: Ada `TRITON_ATTN` fallback (vLLM #38887) — same
+#     perf cliff as other vLLM-track quants on this model.
+#
+# Compressed-tensors-specific params (lifted from the checkpoint's
+# config.json for run-summary provenance; not honored as knobs here —
+# they're baked into the saved packed weights):
+#   * num_bits=4, group_size=32, symmetric=False (asymmetric with
+#     zero-points), strategy=group, observer=mse, format=pack-quantized.
+#   * group_size=32 is 4x finer than the Vishva007 AutoRound checkpoints
+#     (gs=128). Finer groups buy back accuracy at small overhead.
+#
+# Unverified risk (will surface during smoke eval): cyankiwi's calibration
+# set (`cyankiwi/calibration`, 384 NVIDIA Nemotron-SWE-v1 traces) is
+# text-only. The vision tower is bit-identical bf16, but the LM weights
+# that process visual tokens were never calibrated against multimodal
+# distributions. P3 OCR worked cleanly on a simple synthetic stamp;
+# docvqa / textvqa is the real test.
+#
+# This config does NOT trigger quantization at load time — the checkpoint
+# is pre-quantized and vLLM auto-detects from its config.json.
+#
+# Invoke with:
+#   python -m llm_bench_cc model=w4a16-vllm runtime.backend=vllm eval=smoke \
+#       baseline_path=<path-to-vllm-bf16-baseline.json>
+defaults:
+  - base
+  - _self_
+
+name: w4a16-vllm
+hf_id: cyankiwi/gemma-4-E4B-it-AWQ-INT4   # community compressed-tensors W4A16; repo name says "AWQ" but format is compressed-tensors pack-quantized
+dtype: bfloat16   # compute dtype for activations + unquantized layers (vision/audio/embeds/lm_head/PLE per-layer plumbing/norms). Marlin kernels accept bf16 activations against packed int4 weights.
+
+quant:
+  backend: compressed_tensors
+  mode: w4a16
+  # `targets` / `ignore` / `scheme` live in the checkpoint's compressed-tensors
+  # config — recorded here for run-summary provenance only.
