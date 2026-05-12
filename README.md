@@ -1,8 +1,10 @@
 # llm-bench-cc
 
-Optimization pipeline for `google/gemma-4-E4B-it` (image-to-text). Stage 0 is the eval harness:
-five-task benchmark suite (caption, ocr, docvqa, vqa, chart), W&B + CodeCarbon tracking, composite
-retention score against a frozen baseline.
+Optimization pipeline for `google/gemma-4-E4B-it` (image-to-text). The eval harness runs the same
+five-task benchmark suite (caption, ocr, docvqa, vqa, chart) against either an **HF transformers**
+or a **vLLM** runtime — selected per run via `runtime.backend`. W&B + CodeCarbon tracking, composite
+retention score against a frozen per-runtime baseline. Stage 1 quantization sweep landed multiple
+variants on both runtimes (see "Pipeline stages" and "Quantized variants" below).
 
 ## Targets
 
@@ -17,9 +19,17 @@ retention score against a frozen baseline.
 # from repo root
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-# optional, only needed for Stage 1 Tier A (bitsandbytes int8 / nf4)
+# optional, only needed for HF-track bnb variants and vLLM-track bnb-nf4-vllm
 pip install -e ".[quant]"
 ```
+
+The default runtime is HF transformers. To run any vLLM-track variant (see "Quantized variants" below), install vLLM **separately** — it ships its own torch/CUDA build, so don't install it into the same venv on machines where you also want the HF runtime:
+
+```bash
+pip install --pre vllm
+```
+
+vLLM-track compressed-tensors / GPTQ / FP8 variants need no further installs (vLLM's bundled loaders auto-detect quantization format from each checkpoint's `config.json`).
 
 ## One-time auth
 
@@ -81,26 +91,64 @@ python -m llm_bench_cc.cli \
 
 `composite` in `summary.json` will be the retention ratio against that baseline.
 
-## Quantized variants (Stage 1 Tier A)
+## Quantized variants
 
-Two bitsandbytes variants ship as model configs. They drop in via Hydra; the
-runner emits `quant_backend` / `quant_mode` into `summary.json`:
+Each variant ships as a Hydra model config in `configs/model/`. The runner emits `quant_backend` / `quant_mode` into `summary.json`. Pick the runtime via `runtime.backend=hf` (default) or `runtime.backend=vllm`. Each candidate must be compared against a baseline produced on **the same runtime** — vLLM bf16 outputs are not byte-identical to HF bf16 (see open question in `project_vllm_runtime_validated.md`), so cross-runtime retention conflates quant effect with runtime effect.
+
+### HF-track (Stage 1 Tier A — bitsandbytes)
 
 ```bash
 pip install -e ".[quant]"   # one-time
 
-# 8-bit weights (LLM only; vision tower stays in fp16)
+# 8-bit weights (LLM only; vision tower stays in bf16)
 python -m llm_bench_cc.cli model=bnb-int8 eval=standard \
-    baseline_path=<output_dir>/<baseline-run>/baseline.json
+    baseline_path=<output_dir>/<hf-bf16-baseline>/baseline.json
 
 # NF4 4-bit double-quant (LLM only; vision tower stays in bf16)
 python -m llm_bench_cc.cli model=bnb-nf4 eval=standard \
-    baseline_path=<output_dir>/<baseline-run>/baseline.json
+    baseline_path=<output_dir>/<hf-bf16-baseline>/baseline.json
 ```
 
-Skip-modules default to `[vision_tower, multi_modal_projector]`. Override per
-variant with `model.quant.skip_modules='[…]'` if your model exposes a different
-layout.
+bnb's recursive Linear-swap doesn't reliably honor subtree skip names — `backends/hf.py` walks the meta-loaded model and passes the full path of every non-LLM Linear to `llm_int8_skip_modules`. Override per variant via `model.quant.skip_modules='[…]'` only if you know what you're doing.
+
+### vLLM-track (`runtime.backend=vllm`)
+
+Four variants ship; all four were standard-eval-verified on Colab L4 against a vLLM bf16 baseline. Headline retention numbers (composite, 4 tasks × 200, vs vLLM bf16):
+
+| Variant | Composite | Energy Δ vs bf16 | Quant scope |
+|---|---:|---:|---|
+| `w4a16-vllm` (cyankiwi compressed-tensors, int4 gs=32 asym) | **0.978** | **−43.7%** | LM Linears only; vision/audio towers + PLE per-layer plumbing kept bf16 |
+| `fp8-w8a8-vllm` (in-flight FP8 W8A8 E4M3) | 0.975 | −24.8% | LM Linears only; multimodal towers + embeds kept bf16 |
+| `bnb-nf4-vllm` (in-flight NF4) | 0.936 | −27.9% | Every Linear vLLM's bnb loader matches (no skip hook — vision tower included) |
+| `w4a16-vllm-gptq` (Vishva007 GPTQ, int4 gs=128 sym, PLE-quantized) | 0.835 | −35.3% | LM Linears incl. PLE per-layer plumbing; vision/audio towers kept bf16 |
+
+```bash
+pip install --pre vllm   # one-time, separate stack
+
+# cyankiwi W4A16 (current vLLM-track leader)
+python -m llm_bench_cc.cli model=w4a16-vllm runtime.backend=vllm eval=standard \
+    baseline_path=<output_dir>/<vllm-bf16-baseline>/baseline.json
+
+# FP8 W8A8 in-flight (no calibration)
+python -m llm_bench_cc.cli model=fp8-w8a8-vllm runtime.backend=vllm eval=standard \
+    baseline_path=<output_dir>/<vllm-bf16-baseline>/baseline.json
+
+# NF4 in-flight (needs bitsandbytes; vLLM's bnb path has no skip-modules hook)
+python -m llm_bench_cc.cli model=bnb-nf4-vllm runtime.backend=vllm eval=standard \
+    baseline_path=<output_dir>/<vllm-bf16-baseline>/baseline.json
+
+# Vishva007 GPTQ W4A16 (paired comparison point; loses to cyankiwi on every task)
+python -m llm_bench_cc.cli model=w4a16-vllm-gptq runtime.backend=vllm eval=standard \
+    baseline_path=<output_dir>/<vllm-bf16-baseline>/baseline.json
+```
+
+The two W4A16 variants both adopt community pre-quantized checkpoints — no own calibration. Provenance + paired comparison verdict lives in `docs/community-w4a16-analysis.md`. The cyankiwi conservative scope (PLE preserved, gs=32 asym) wins both retention and energy; the Vishva007 aggressive scope (PLE quantized, gs=128 sym) clears the 0.80 bar by only 3.5pp and loses on every task.
+
+vLLM's `peak_vram_gb` is the pre-allocated KV-cache pool size (≈ `gpu_memory_utilization × total_VRAM`), not the weight footprint. Quant savings show up only in the startup log line "Model loading took X GiB". Grep there if you need the weights-only number.
+
+### Tier B HF-track (parked)
+
+`scripts/quantize_fp8.py` and `scripts/quantize_w4a16.py` produce compressed-tensors checkpoints via `llmcompressor.model_free_ptq`. Both are **parked on HF transformers**: FP8_BLOCK loads bf16-at-inference (no fp8 kernels), and W4A16 measured 0.79 smoke / 18.75 GB peak (Marlin overhead exceeded savings on a 5B body). The same FP8_BLOCK checkpoint runs cleanly on vLLM where fp8 kernels engage; the W4A16 path on vLLM uses the cyankiwi community checkpoint instead of our recipe. See `reference_model_free_ptq_dead_end.md` for the full closure rationale.
 
 ## Persistent caches (Drive on Colab)
 
@@ -159,6 +207,11 @@ python -m llm_bench_cc.cli output_dir=/tmp/runs
 # bf16 + sdpa on L4 (Ada)
 python -m llm_bench_cc.cli model.dtype=bfloat16 model.attn_implementation=sdpa
 
+# switch to vLLM runtime (needs `pip install --pre vllm` first; see "Quantized variants")
+python -m llm_bench_cc.cli runtime.backend=vllm
+# vLLM-specific knobs: pre-allocated KV-cache pool fraction + per-prompt MM slot counts
+python -m llm_bench_cc.cli runtime.backend=vllm runtime.vllm.gpu_memory_utilization=0.85
+
 # tune memory hygiene (legacy T4 settings; can usually be relaxed on L4)
 python -m llm_bench_cc.cli runtime.image_max_side=null runtime.empty_cache_between_samples=false
 
@@ -197,15 +250,24 @@ Metric tests lock the behavior the composite score depends on. If these change, 
 
 ```
 src/llm_bench_cc/
-  configs/               Hydra: model, eval (smoke/full), top-level config
-                         (shipped inside the package so pip-installed runs work)
-  models.py              HF loader (AutoModelForImageTextToText)
+  configs/               Hydra: model (incl. all quant variants), eval (smoke/standard/full),
+                         top-level config (shipped inside the package so pip-installed runs work)
+  backends/              Backend protocol + HF / vLLM implementations
+    base.py              Backend protocol (load + generate + peak_vram_gb)
+    hf.py                AutoModelForImageTextToText loader + bnb integration with full-path
+                         skip-modules enumeration (the load-bearing bnb gotcha)
+    vllm.py              vLLM `LLM` engine wrapper; nvidia-smi-based VRAM poller (torch counters
+                         can't see vLLM's worker subprocess)
+    __init__.py          `load_backend(cfg)` dispatch on `runtime.backend`
   metrics.py             BLEU-4, ANLS, VQA-acc, relaxed-acc, char-accuracy
-  composite.py           Per-task retention ratios → unweighted composite
+  composite.py           Per-task retention ratios → unweighted composite (intersection-based
+                         across tasks present in both candidate and baseline)
   tasks/                 One file per task; registry exposes them by name
-  tracking.py            W&B + CodeCarbon wrappers
+  tracking.py            W&B + CodeCarbon wrappers (W&B init MUST come after vLLM backend load —
+                         see `reference_wandb_vllm_deadlock.md`)
   runner.py              Eval loop, latency/VRAM capture, baseline.json/summary.json
   cli.py                 Hydra entry point (sets PYTORCH_CUDA_ALLOC_CONF, quiets HTTP loggers)
+scripts/                 Optional one-shot helpers (quantize_*, spike_*, vllm_spike); not on path
 tests/                   Metric smoke tests
 ```
 
@@ -224,7 +286,7 @@ python -m llm_bench_cc.cli eval.datasets.caption.hf_id=<other-dataset>
 
 | Stage | Goal | Status |
 |---|---|---|
-| 0. Eval harness + bf16 baseline | Honest retention denominator on L4 | Done — bf16 baseline locked 2026-05-01 |
-| 1. Quantization sweep | Cut weights/energy with minimal retention loss (bnb-int8/nf4, FP8_BLOCK / W4A16 via llmcompressor, GGUF-Q4_K_M/Q5_K_M) | Tier A (bnb-int8 / bnb-nf4) shipped; Tier B partial (FP8_BLOCK ckpt produced via `scripts/quantize_fp8.py`, retention not yet measured); Tier C pending |
+| 0. Eval harness + bf16 baseline | Honest retention denominator on L4 | Done — HF bf16 baseline locked 2026-05-01; vLLM bf16 baselines (smoke + standard) minted 2026-05-11 |
+| 1. Quantization sweep | Cut weights/energy with minimal retention loss | **HF track:** bnb-int8 (0.98) and bnb-nf4 (0.92) shipped. **vLLM track:** bnb-nf4-vllm, fp8-w8a8-vllm, w4a16-vllm (cyankiwi), w4a16-vllm-gptq (Vishva007 GPTQ) all standard-eval-verified. Current leader: **w4a16-vllm (cyankiwi) at 0.978 / −43.7% energy**. Tier B HF-track parked (llm-compressor `model_free_ptq` dead on Gemma 4 E-variants). Tier C (GGUF / llama.cpp) pending upstream feasibility. |
 | 2. Pruning + Distillation | Shrink architecture, recover capability | Pending Stage 1 winner |
 | 3. Best-of-stack | Combine pruned → distilled → quantized | Pending Stage 2 |
