@@ -9,10 +9,11 @@ wire the checkpoint into the benchmark harness:
        a bare `LLM(model=...)` and watching the startup log for a
        `compressed_tensors` / `pack-quantized` mention.
 
-  P2 — Exactly 258 LM Linears are quantized:
+  P2 — Exactly 259 LM Linears are quantized:
          42 × (q_proj, o_proj, gate_proj, up_proj, down_proj) = 210
        + 24 × (k_proj, v_proj)                                = 48   (KV-sharing
                                                                        on 18/42 layers)
+       + 1 per_layer_model_projection
        PLE plumbing (`per_layer_input_gate`, `per_layer_projection`, 84
        Linears total) stays in bf16, as do `vision_tower`, `audio_tower`,
        `lm_head`. Verified offline by enumerating tensor keys in the
@@ -25,7 +26,7 @@ wire the checkpoint into the benchmark harness:
        accuracy here — only check that a text+image prompt returns
        non-empty text mentioning the synthetic stamp on the image.
 
-  P4 — Weights footprint sits between bf16 baseline (~10 GiB on Spike 1)
+  P4 — Weights footprint sits between bf16 baseline (~16 GiB on Spike 1)
        and a fully-4-bit LM (~3 GiB). cyankiwi's mixed scope (LM Linears
        at int4 g=32 asym; vision+audio towers + PLE plumbing + lm_head
        in bf16) predicts ~5–7 GiB for the "Model loading took X GiB"
@@ -324,7 +325,7 @@ def main() -> None:
                 p2_report["per_layer_full_quant_modules"])
     logger.info("per-layer KV-shared modules      : %s",
                 p2_report["per_layer_kv_quant_modules"])
-    logger.info("PLE Linears quantized (want 0)   : %d",
+    logger.info("PLE Linears quantized            : %d",
                 p2_report["ple_linears_quantized"])
     logger.info("checks: %s", p2_report["checks"])
     logger.info("P2 VERDICT: %s", "PASS" if p2_pass else "FAIL")

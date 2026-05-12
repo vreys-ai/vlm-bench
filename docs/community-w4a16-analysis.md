@@ -1,7 +1,7 @@
 # Community W4A16 Checkpoints for gemma-4-E4B-it — Configuration Analysis
 
-**Status:** cyankiwi smoke-verified 2026-05-11 (see "Spike verification" section); Vishva007 variants analyzed from configs only.
-**Date:** 2026-05-11 (initial analysis); 2026-05-11 (cyankiwi verification appended)
+**Status:** cyankiwi standard-eval-verified 2026-05-11 — **new vLLM-track leader at 0.978 composite retention, −43.7% energy vs bf16** (see "Standard eval results" section). Vishva007 variants analyzed from configs only; not benchmarked yet.
+**Date:** 2026-05-11 (initial analysis); 2026-05-11 (cyankiwi spike + standard eval appended)
 **Question being answered:** of the available community pre-quantized W4A16 checkpoints, which (if any) should we adopt as a vLLM-track 4-bit data point, given our own `llm-compressor model_free_ptq` W4A16 recipe failed on this model architecture on 2026-05-10?
 
 ## Candidates evaluated
@@ -207,6 +207,81 @@ A one-liner against the cached safetensors confirms the 259th quantized Linear i
 ```
 
 This is a model-level Linear (not per-layer), distinct from the 42 `per_layer_projection` Linears that exist inside each transformer block. Vishva007's safetensors index lists it as a plain `.weight` (kept bf16), so the two vendors made opposite calls on this single Linear. The energy/retention impact of this disagreement is negligible (one Linear out of 259/342), but it explains the off-by-one between the pre-spike subtraction estimate and the measured count.
+
+## Standard eval results (2026-05-11)
+
+Standard eval on Colab L4, 200 samples × 4 tasks (caption / chart / docvqa / ocr), wandb run `nbbglmkv` (`w4a16-vllm-standard-20260511-202441`). Compared against the existing vLLM-track standard runs to keep the comparison apples-to-apples.
+
+### Composite + retention
+
+| Run | Composite | Retention vs bf16 | Energy vs bf16 |
+|---|---:|---:|---:|
+| `base-vllm` (bf16) | 1.0000 | 1.0000 | — |
+| `fp8-w8a8-vllm` | 0.9748 | 0.9748 | −24.8% |
+| `bnb-nf4-vllm` | 0.9358 | 0.9358 | −27.9% |
+| **`w4a16-vllm` (cyankiwi)** | **0.9783** | **0.9783** | **−43.7%** |
+
+cyankiwi clears the 0.80 retention bar by 18 absolute points, edges fp8-w8a8 on retention by ~0.35pp, and roughly **doubles** the energy savings of every other quant on the matrix. It is the new vLLM-track leader on both axes.
+
+### Per-task retention
+
+| Task | Metric | fp8-w8a8 | bnb-nf4 | **w4a16** | Notes |
+|---|---|---:|---:|---:|---|
+| caption | bleu4 | 0.970 | 0.980 | **1.011** | >1.0 plausibly noise — bleu4 ~0.10 has high variance at N=200. Treat ≥0.97 as a tie. |
+| chart | relaxed_acc | **0.951** | 0.916 | 0.937 | Everyone's weakest task; likely most quantization-sensitive. fp8 wins this one. |
+| docvqa | anls | 1.016 | 0.897 | 0.983 | w4a16's 0.983 is the saner docvqa retention number; fp8's earlier 1.016 still looks like its own variance. |
+| ocr | anls | 0.978 | 0.950 | **0.993** | w4a16 essentially matches bf16. |
+
+### Per-task energy (kWh) and latency
+
+Energy: cyankiwi saves 33–47% per task against bf16, with the smallest delta on docvqa and the largest on caption / chart:
+
+| Task | bf16 | **w4a16** | Δ |
+|---|---:|---:|---:|
+| caption | 0.00724 | 0.00381 | **−47.3%** |
+| chart   | 0.00514 | 0.00277 | **−46.2%** |
+| docvqa  | 0.00288 | 0.00193 | **−33.1%** |
+| ocr     | 0.00334 | 0.00195 | **−41.4%** |
+
+Latency (mean ms/sample): −36% to −47% per task vs bf16. Specifically:
+
+| Task | bf16 | fp8-w8a8 | bnb-nf4 | **w4a16** |
+|---|---:|---:|---:|---:|
+| caption | 981 | 715 | 614 | **522** |
+| chart | 678 | 515 | 480 | **362** |
+| docvqa | 338 | 267 | 289 | **216** |
+| ocr | 436 | 327 | 361 | **253** |
+
+So w4a16 is **faster than fp8-w8a8 on every task**, despite Marlin paying for the Ada TRITON_ATTN cliff that fp8 also pays for. The int4 weight bandwidth win evidently dominates the kernel-dispatch overhead at this batch size.
+
+### Peak VRAM (uniform across runs — KV-cache pool, as expected)
+
+All four runs report `avg_peak_vram_gb` ≈ 20.2 GiB because vLLM pre-allocates KV-cache to `gpu_memory_utilization × total_VRAM` (default 0.9 × 22.5 = ~20.25 on L4). Quant savings surface only in the startup log's "Model loading took X GiB" line:
+
+| Run | Weights footprint |
+|---|---:|
+| bf16 baseline | ~16 GiB |
+| `fp8-w8a8-vllm` | 10.93 GiB |
+| **`w4a16-vllm` (cyankiwi)** | **9.48 GiB** |
+
+### Two tasks where w4a16 didn't win
+
+* **chart (0.937 vs fp8's 0.951)** — w4a16 gives up 1.4pp on chart. Plausible: chart_qa relaxed_acc rewards exact numeric matches in text, and fp8's 8-bit precision is less aggressive than int4 on the LM weights handling that. Not a blocker; well above the bar.
+* **docvqa (0.983 vs fp8's 1.016)** — but fp8's 1.016 was already flagged as suspicious. w4a16's 0.983 is the more credible number; fp8 may be the outlier here, not the gold standard.
+
+### Why this comes out ahead
+
+Mechanism, in plain terms:
+
+1. **More aggressive weight bit-budget** (int4 vs fp8) for the standard LM Linears, where most of gemma-4-E4B's parameters live → bigger memory-bandwidth win on every forward pass.
+2. **Same vision-tower preservation** as fp8-w8a8 (and explicitly *more* preservation than bnb-nf4-vllm, which has no skip-modules hook), so the visual encoder path is bit-identical to bf16. Document and OCR tasks that depend on intact visual features keep retention high.
+3. **PLE per-layer plumbing preserved in bf16** (the architecturally-fragile bits that broke our llm-compressor recipe), so we don't pay an accuracy tax on the part of the model that's hardest to quantize cleanly.
+4. **Finer quantization grain than the AutoRound alternatives** (gs=32 vs gs=128), which buys back accuracy at small overhead.
+
+### Not yet verified (open questions for any follow-up)
+
+* The text-only calibration risk (vision tower bit-identical bf16, but LM weights calibrated against text-only Nemotron-SWE-v1 traces) appears to be small for our task mix — but if a future task is heavier on visual reasoning (e.g. MMMU-style chart-reasoning) the picture may shift.
+* Whether the Vishva007 GPTQ variant (PLE-quantized, gs=128, sym) would beat cyankiwi by quantizing 83 more Linears, or lose retention. Not pursued — cyankiwi already wins; running Vishva007 is only justified if we want a paired comparison on PLE-quantized vs PLE-preserved.
 
 ## Revisions to prior memory
 
