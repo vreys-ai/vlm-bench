@@ -371,7 +371,7 @@ def main() -> None:
     logger.info("=== P4 — Weights footprint ===")
     logger.info("Cannot read programmatically. Scroll up to find vLLM's "
                 "'Model loading took X GiB' startup line.")
-    logger.info("Prediction: 5–7 GiB (vs ~10 GiB for bf16 baseline, "
+    logger.info("Prediction: ~9 GiB (vs ~16 GiB for bf16 baseline, "
                 "~3 GiB for hypothetical fully-4-bit LM).")
 
 

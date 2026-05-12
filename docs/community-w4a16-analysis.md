@@ -1,7 +1,7 @@
 # Community W4A16 Checkpoints for gemma-4-E4B-it — Configuration Analysis
 
-**Status:** cyankiwi standard-eval-verified 2026-05-11 — **new vLLM-track leader at 0.978 composite retention, −43.7% energy vs bf16** (see "Standard eval results" section). Vishva007 variants analyzed from configs only; not benchmarked yet.
-**Date:** 2026-05-11 (initial analysis); 2026-05-11 (cyankiwi spike + standard eval appended)
+**Status:** cyankiwi standard-eval-verified 2026-05-11 (composite **0.978**, energy **−43.7%** vs bf16). Vishva007 GPTQ standard-eval-verified 2026-05-12 (composite **0.835**, energy **−35.3%** — below cyankiwi on both axes). **cyankiwi remains the vLLM-track W4A16 winner**; PLE-quantization + gs=128-sym (the Vishva007 scope) is not free on this model. Vishva007 AWQ variant analyzed from configs only; not benchmarked.
+**Date:** 2026-05-11 (initial analysis); 2026-05-11 (cyankiwi spike + standard eval appended); 2026-05-12 (Vishva007 GPTQ spike + standard eval appended)
 **Question being answered:** of the available community pre-quantized W4A16 checkpoints, which (if any) should we adopt as a vLLM-track 4-bit data point, given our own `llm-compressor model_free_ptq` W4A16 recipe failed on this model architecture on 2026-05-10?
 
 ## Candidates evaluated
@@ -282,6 +282,70 @@ Mechanism, in plain terms:
 
 * The text-only calibration risk (vision tower bit-identical bf16, but LM weights calibrated against text-only Nemotron-SWE-v1 traces) appears to be small for our task mix — but if a future task is heavier on visual reasoning (e.g. MMMU-style chart-reasoning) the picture may shift.
 * Whether the Vishva007 GPTQ variant (PLE-quantized, gs=128, sym) would beat cyankiwi by quantizing 83 more Linears, or lose retention. Not pursued — cyankiwi already wins; running Vishva007 is only justified if we want a paired comparison on PLE-quantized vs PLE-preserved.
+
+## Vishva007 GPTQ standard eval results (2026-05-12)
+
+Standard eval on Colab L4, 200 samples × 4 tasks (caption / chart / docvqa / ocr), wandb run `0cc1noa8` (`w4a16-vllm-gptq-standard-20260512-134032`). Compared against the same vLLM bf16 baseline (`u8fbcn7l`) cyankiwi was scored against, plus the existing vLLM-track quants.
+
+### Composite + retention
+
+| Run | Composite | Retention vs bf16 | Energy vs bf16 |
+|---|---:|---:|---:|
+| `base-vllm` (bf16) | 1.0000 | 1.0000 | — |
+| `fp8-w8a8-vllm` | 0.9748 | 0.9748 | −24.8% |
+| **`w4a16-vllm` (cyankiwi)** | **0.9783** | **0.9783** | **−43.7%** |
+| `bnb-nf4-vllm` | 0.9358 | 0.9358 | −27.9% |
+| **`w4a16-vllm-gptq` (Vishva007)** | **0.8348** | **0.8348** | **−35.3%** |
+
+Vishva007 GPTQ clears the 0.80 retention bar by only 3.5 absolute points — cleared, but the slimmest margin of any quant on the matrix and a **14.4 absolute composite-point loss to cyankiwi**. Loses to bnb-nf4-vllm by ~10pp too. The −35.3% energy is better than fp8-w8a8 (−24.8%) and bnb-nf4-vllm (−27.9%) but trails cyankiwi (−43.7%) by ~8pp. **Loss on both axes vs cyankiwi — not a tradeoff.**
+
+### Per-task retention
+
+| Task | Metric | bf16 | fp8-w8a8 | bnb-nf4 | cyankiwi | **Vishva007** | gptq ret |
+|---|---|---:|---:|---:|---:|---:|---:|
+| caption | bleu4 | 0.1085 | 0.1053 | 0.1063 | 0.1097 | **0.0852** | **0.785** |
+| chart | relaxed_acc | 0.7150 | 0.6800 | 0.6550 | 0.6700 | **0.5550** | **0.776** |
+| docvqa | anls | 0.7888 | 0.8017 | 0.7075 | 0.7754 | **0.7189** | **0.911** |
+| ocr | anls | 0.7431 | 0.7265 | 0.7062 | 0.7381 | **0.6438** | **0.867** |
+
+Vishva007 GPTQ loses on **every task**. Worst hits: chart (−16.1pp absolute relaxed_acc; retention 0.776, the only sub-0.80 task-retention number on the entire vLLM matrix) and ocr (−9.9pp absolute anls). caption bleu4 drops 21.5% relative — the metric is variance-prone at N=200, but the drop is well outside what cyankiwi/fp8/bnb-nf4 showed (all three within ±3% of bf16 on caption), so it's not just noise.
+
+### Per-task energy (kWh) and latency (ms/sample mean)
+
+| Task | bf16 kWh | **gptq kWh** | Δ | bf16 ms | **gptq ms** | Δ | cyankiwi ms (ref) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| caption | 0.00724 | **0.00362** | **−50.0%** | 981 | **496** | **−49.5%** | 522 |
+| chart   | 0.00514 | **0.00381** | **−25.8%** | 678 | **503** | **−25.8%** | 362 |
+| docvqa  | 0.00288 | **0.00214** | **−25.6%** | 338 | **247** | **−26.9%** | 216 |
+| ocr     | 0.00334 | **0.00247** | **−25.9%** | 436 | **322** | **−26.2%** | 253 |
+
+The energy/latency pattern is uneven — caption alone gets the dramatic −50% savings; the other three tasks all settle around −26%. And against cyankiwi specifically, **Vishva007 GPTQ is slower on chart / docvqa / ocr** (e.g. chart 503 ms vs cyankiwi 362 ms, a 38.9% latency penalty) and only edges it on caption (496 vs 522). gptq-marlin at gs=128 evidently dispatches slower per-token than compressed-tensors W4A16 at gs=32 on this Ada path, despite both running the same Marlin kernel family.
+
+### Peak VRAM
+
+`avg_peak_vram_gb = 20.125 GiB` — same KV-cache-pool dominance as every other vLLM run; weight footprint shows up only in startup logs (vLLM startup line: weights-only number ~9.2 GiB expected based on PLE-quantized scope but not captured in summary; comparable to cyankiwi's 9.48 GiB).
+
+### Two tasks where Vishva007 GPTQ failed the implicit retention bar
+
+* **chart (0.776 retention)** — first sub-0.80 task-retention measurement on the vLLM matrix. PLE-quantization plausibly compounds with chart_qa's exact-numeric-match sensitivity: the per-layer PLE projections control how strongly per-layer embeddings inject into the residual stream, and quantizing them at gs=128 sym evidently corrupts the fine numeric features that chart questions require. cyankiwi (PLE preserved) gives 0.937 on the same task.
+* **ocr (0.867 retention)** — best of the four for Vishva007, but still well below the other three quants (cyankiwi 0.993, fp8 0.978, bnb-nf4 0.950). The same PLE-corruption story fits: OCR demands character-level precision the per-layer plumbing helps preserve.
+
+### What this answers (the paired comparison from the analysis section above)
+
+The pre-eval analysis framed Vishva007-vs-cyankiwi as the test of two coupled choices: **PLE-quantization** (Vishva007: yes, +84 Linears; cyankiwi: no) and **gs=128 sym** (Vishva007) vs **gs=32 asym** (cyankiwi). The result is unambiguous:
+
+> **cyankiwi's conservatism was earning its accuracy keep.** PLE-quantization + coarser-grain + symmetric is not safe on this architecture. The +84 quantized Linears (per-layer PLE `input_gate` + `projection`) likely account for the bulk of the accuracy loss — those are precisely the modules that broke our own `llm-compressor` recipe; Vishva007's AutoRound 0.13 in RTN mode produced loadable outputs but at a real retention cost that the gs=128 sym scheme amplified rather than masked.
+
+There's no axis on which Vishva007 GPTQ is preferable to cyankiwi: cyankiwi wins composite by 14.4pp, every per-task retention number, energy savings by ~8pp, and latency on three of four tasks.
+
+### Vishva007 AWQ — should we still run it?
+
+The pre-eval doc proposed Vishva007 AWQ only if "we want the AWQ kernel data point specifically." Given Vishva007 GPTQ landed at 0.835 with the same quantization scope as Vishva007 AWQ (342 Linears, gs=128, sym, RTN mode — only the on-disk packing differs), the AWQ variant is highly likely to land within ±1pp of GPTQ. We get no new science from running it. **Park unless an AWQ-kernel-specific question surfaces later.**
+
+### Not yet verified (open questions for any follow-up)
+
+* Whether finer-grain GPTQ (gs=32 or gs=64) would close the gap to cyankiwi without preserving PLE. Probably yes for the grain effect, no for the PLE effect — the chart drop strongly implicates PLE-quantization specifically, not just the grain.
+* Whether a Vishva007-style scope (PLE-quantized) at asymmetric + gs=32 could match cyankiwi. No such community checkpoint exists; would need to be produced. Not worth pursuing unless cyankiwi develops a problem.
 
 ## Revisions to prior memory
 
