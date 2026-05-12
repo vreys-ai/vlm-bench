@@ -1,0 +1,69 @@
+# W4A16 (int4 weights, bf16 activations) served through vLLM via a community-
+# built GPTQ checkpoint (Vishva007/gemma-4-E4B-it-W4A16-AutoRound-GPTQ).
+#
+# Paired comparison point against w4a16-vllm (cyankiwi). Same scheme (W4A16),
+# same runtime (vLLM), different vendor decisions on the two PLE-related
+# scope questions — see docs/community-w4a16-analysis.md "The architecturally
+# meaningful differences" for the full breakdown. In short, vs cyankiwi:
+#   * +84 per-layer PLE Linears quantized (per_layer_input_gate +
+#     per_layer_projection) — more aggressive scope.
+#   * -1 model-level per_layer_model_projection (kept bf16 here).
+#   * group_size 128 vs 32 — 4× coarser scales; smaller checkpoint, lower
+#     accuracy headroom.
+#   * symmetric vs asymmetric — no zero-points; faster on some kernels,
+#     less flexible against bimodal weight distributions.
+#   * GPTQ standard format vs compressed-tensors pack-quantized.
+#
+# Built with AutoRound 0.13.0 in RTN mode (iters=0 — "required for Gemma 4
+# compatibility" per the model card, same PLE/KV-sharing wall that pushed
+# our own model_free_ptq into a dead end on 2026-05-10), exported to GPTQ.
+# 256 calibration samples at seq_len 2048; calibration dataset not named on
+# the card, so AutoRound's default NeelNanda/pile-10k applies (text-only,
+# same calibration-domain risk as cyankiwi — vision tower stays bit-identical
+# bf16, but the LM weights that process visual tokens were never tuned
+# against multimodal distributions).
+#
+# vLLM routing: the card prescribes `--quantization autoround`, but the
+# underlying on-disk format is standard GPTQ, so vLLM's bundled GPTQ loader
+# auto-detects from config.json's `quant_method: gptq` and routes through
+# the gptq-marlin int4 kernel on Ada+. No `quantization=` constructor kwarg
+# needed (same auto-detect pattern as w4a16-vllm / fp8-block).
+#
+# Verified by scripts/spike_vishva007_w4a16_gptq.py on Colab L4, 2026-05-12:
+#   * Load path: vLLM auto-detected GPTQ from config.json with no kwarg.
+#   * Structural scope (offline safetensors enumeration of `.qweight`): 342
+#     quantized Linears matching the predicted breakdown —
+#       42 × (q_proj, o_proj, gate_proj, up_proj, down_proj,
+#             per_layer_input_gate, per_layer_projection)         = 294
+#       24 × (k_proj, v_proj)  [KV-sharing on 18/42 layers]       =  48
+#     vision_tower, audio_tower, model-level per_layer_model_projection,
+#     and lm_head stay in bf16.
+#   * Multimodal smoke: text+image prompt returned non-empty text with
+#     vision pipeline engaged.
+#
+# Quant params (lifted from the checkpoint's quantization_config.json for
+# run-summary provenance; not honored as knobs here — baked into the
+# packed weights):
+#   * num_bits=4, group_size=128, symmetric=True (no zero-points),
+#     desc_act=False, damp_percent=0.01, format=gptq.
+#   * AutoRound iters=0 (RTN mode, not the full iterative AutoRound).
+#
+# This config does NOT trigger quantization at load time — the checkpoint
+# is pre-quantized and vLLM auto-detects from its config.json.
+#
+# Invoke with:
+#   python -m llm_bench_cc model=w4a16-vllm-gptq runtime.backend=vllm eval=standard \
+#       baseline_path=<path-to-vllm-bf16-standard-baseline.json>
+defaults:
+  - base
+  - _self_
+
+name: w4a16-vllm-gptq
+hf_id: Vishva007/gemma-4-E4B-it-W4A16-AutoRound-GPTQ
+dtype: bfloat16   # compute dtype for activations + unquantized layers (vision/audio/embeds/lm_head/model-level PLE projection/norms). Marlin kernels accept bf16 activations against packed int4 weights.
+
+quant:
+  backend: gptq
+  mode: w4a16
+  # `targets` / `ignore` / `scheme` live in the checkpoint's GPTQ
+  # quantization_config — recorded here for run-summary provenance only.
