@@ -112,6 +112,26 @@ IGNORE = [
     "lm_head",
 ]
 
+# Substring markers we expect to see in oneshot failures caused by Gemma 4
+# E-variant architecture (per-layer-embeddings + KV-sharing across decoder
+# layers, see reference_llmcompressor_entrypoints memory note). Matched
+# case-insensitively against `str(exception)`. Unknown failures re-raise —
+# we'd rather surface a new failure mode than silently downgrade quality.
+_E_VARIANT_FAILURE_MARKERS = (
+    "per_layer_input_gate",
+    "num_kv_shared_layers",
+    "proxy",
+    "fx",
+    "sequential pipeline",
+)
+
+
+def _is_known_e_variant_failure(exc: BaseException) -> bool:
+    """Return True if `exc`'s message contains any known marker for the
+    Gemma 4 E-variant oneshot failure modes."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _E_VARIANT_FAILURE_MARKERS)
+
 
 def _git_sha(repo_root: Path) -> str:
     try:
