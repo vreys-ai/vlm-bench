@@ -202,6 +202,31 @@ def _build_recipe_payload(
     }
 
 
+def _load_model(args: argparse.Namespace):
+    """Load gemma-4-E4B-it for calibration. `device_map='auto'` with a
+    capped GPU budget spills the vision/audio towers to CPU on L4 24GB —
+    they're in IGNORE and never touched during LM calibration anyway.
+
+    Imported lazily so `--help` and unit tests don't pay the transformers
+    import cost."""
+    import torch
+    from transformers import AutoModelForImageTextToText
+
+    return AutoModelForImageTextToText.from_pretrained(
+        args.model_id,
+        dtype=torch.bfloat16,
+        device_map="auto",
+        max_memory={0: args.max_gpu_memory, "cpu": "64GiB"},
+    )
+
+
+def _load_processor(args: argparse.Namespace):
+    """Load the multimodal processor. Cheap; not factored for reuse, just
+    here to keep model and processor loads side-by-side for readability."""
+    from transformers import AutoProcessor
+    return AutoProcessor.from_pretrained(args.model_id)
+
+
 def _git_sha(repo_root: Path) -> str:
     try:
         return subprocess.check_output(
