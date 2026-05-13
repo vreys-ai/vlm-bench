@@ -93,3 +93,73 @@ class TestPickCalibrationColumn:
     def test_no_match_error_lists_priority(self):
         with pytest.raises(ValueError, match=r"instruction.*prompt.*text"):
             qc._pick_calibration_column(available_columns=["foo"])
+
+
+class TestBuildRecipePayload:
+    def test_includes_all_required_fields(self):
+        import argparse
+        args = argparse.Namespace(
+            model_id="google/gemma-4-E4B-it",
+            calibration_dataset="garage-bAInd/Open-Platypus",
+            calibration_split="train",
+            num_calibration_samples=128,
+            max_seq_length=2048,
+            group_size=32,
+            observer="mse",
+            symmetric=False,
+            gptq_block_size=128,
+            gptq_dampening_frac=0.01,
+            seed=42,
+        )
+        payload = qc._build_recipe_payload(
+            args=args,
+            entrypoint_used="llmcompressor.oneshot+GPTQModifier",
+            git_sha="abc1234",
+        )
+        assert payload["model_id"] == "google/gemma-4-E4B-it"
+        assert payload["entrypoint"] == "llmcompressor.oneshot+GPTQModifier"
+        assert payload["git_sha"] == "abc1234"
+        assert payload["scheme_kwargs"]["num_bits"] == 4
+        assert payload["scheme_kwargs"]["group_size"] == 32
+        assert payload["scheme_kwargs"]["observer"] == "mse"
+        assert payload["scheme_kwargs"]["symmetric"] is False
+        assert payload["ignore_patterns"] == qc.IGNORE
+        assert payload["calibration"]["dataset"] == "garage-bAInd/Open-Platypus"
+        assert payload["calibration"]["num_samples"] == 128
+        assert payload["calibration"]["max_seq_length"] == 2048
+        assert payload["calibration"]["seed"] == 42
+        assert "timestamp_utc" in payload
+        # Timestamp should be ISO-8601 with seconds precision (sortable).
+        assert payload["timestamp_utc"].endswith("+00:00")
+        assert "based_on" in payload
+        assert "cyankiwi" in payload["based_on"]
+
+    def test_reflects_cli_overrides(self):
+        import argparse
+        args = argparse.Namespace(
+            model_id="google/gemma-4-E4B-it",
+            calibration_dataset="HuggingFaceH4/ultrachat_200k",
+            calibration_split="train_sft",
+            num_calibration_samples=256,
+            max_seq_length=1024,
+            group_size=128,
+            observer="minmax",
+            symmetric=True,
+            gptq_block_size=64,
+            gptq_dampening_frac=0.05,
+            seed=99,
+        )
+        payload = qc._build_recipe_payload(
+            args=args,
+            entrypoint_used="llmcompressor.oneshot+QuantizationModifier",
+            git_sha="def5678",
+        )
+        assert payload["scheme_kwargs"]["group_size"] == 128
+        assert payload["scheme_kwargs"]["observer"] == "minmax"
+        assert payload["scheme_kwargs"]["symmetric"] is True
+        assert payload["calibration"]["dataset"] == "HuggingFaceH4/ultrachat_200k"
+        assert payload["calibration"]["split"] == "train_sft"
+        assert payload["calibration"]["num_samples"] == 256
+        assert payload["calibration"]["max_seq_length"] == 1024
+        assert payload["calibration"]["seed"] == 99
+        assert payload["entrypoint"] == "llmcompressor.oneshot+QuantizationModifier"

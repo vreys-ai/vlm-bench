@@ -163,6 +163,45 @@ def _pick_calibration_column(available_columns: list[str]) -> tuple[str, bool]:
     )
 
 
+def _build_recipe_payload(
+    args: argparse.Namespace, *, entrypoint_used: str, git_sha: str
+) -> dict:
+    """Build the dict that's written to `<output-dir>/quant_recipe.json`.
+
+    The eval pipeline reads `entrypoint` to know which modifier produced
+    the checkpoint (GPTQ vs observer-only). Calibration params are
+    captured verbatim from the CLI args so the knob sweep is traceable.
+    """
+    return {
+        "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "git_sha": git_sha,
+        "model_id": args.model_id,
+        "entrypoint": entrypoint_used,
+        "scheme_kwargs": {
+            "num_bits": 4,
+            "group_size": args.group_size,
+            "strategy": "group",
+            "symmetric": args.symmetric,
+            "observer": args.observer,
+            "actorder": None,
+            "dynamic": False,
+        },
+        "ignore_patterns": IGNORE,
+        "calibration": {
+            "dataset": args.calibration_dataset,
+            "split": args.calibration_split,
+            "num_samples": args.num_calibration_samples,
+            "max_seq_length": args.max_seq_length,
+            "seed": args.seed,
+        },
+        "gptq_params": {
+            "block_size": args.gptq_block_size,
+            "dampening_frac": args.gptq_dampening_frac,
+        },
+        "based_on": "https://huggingface.co/cyankiwi/gemma-4-E4B-it-AWQ-INT4/blob/main/config.json",
+    }
+
+
 def _git_sha(repo_root: Path) -> str:
     try:
         return subprocess.check_output(
