@@ -1,6 +1,6 @@
 # Calibrated W4A16 quantization script (`scripts/quantize_cyankiwi.py`)
 
-**Status:** Design approved 2026-05-13. Ready for implementation planning.
+**Status:** Design approved 2026-05-13. Implementation shipped 2026-05-13 with one significant divergence from this design — see "Post-ship divergence" at the bottom of this file.
 
 **Motivation:** Stage 1 vLLM-track standard eval ranks `cyankiwi/gemma-4-E4B-it-AWQ-INT4` at composite retention **0.978 / −43.7% energy** — the strongest W4A16 result we have, and notably stronger than the paired Vishva007 W4A16 GPTQ at 0.835 / −35.3%. The cyankiwi checkpoint is a community artifact we don't control. To run knob-level ablations (which parameter actually carries the retention edge — group_size, observer, asymmetry, calibration data, or some combination?) we need a script that produces a checkpoint with cyankiwi's observable config and exposes those knobs as CLI flags.
 
@@ -209,3 +209,23 @@ No `--device` flag — `device_map="auto"` is doing the placement work; explicit
 - Based on cyankiwi's published `config.json` (URL above), fetched 2026-05-13.
 - Sibling pattern follows existing `scripts/quantize_fp8.py` and `scripts/quantize_w4a16.py`.
 - llmcompressor entrypoint choice and oneshot vs model_free_ptq tradeoffs follow `[[reference_llmcompressor_entrypoints]]`.
+
+## Post-ship divergence (2026-05-13)
+
+The original design specified an automatic `GPTQModifier → QuantizationModifier` fallback on known E-variant marker exceptions. The implementation initially shipped that design, but Colab L4 smoke runs surfaced two blockers that the design had not anticipated:
+
+1. **`scheme=` parameter shape.** `GPTQModifier`'s `scheme=` parameter validates as either a string preset name or `{preset_name: targets}` — it rejects custom `QuantizationArgs` dicts. Fixed by switching to `config_groups=` with explicit `{group_0: {targets, weights, input_activations, output_activations}}`. This is also closer to cyankiwi's saved `config.json` structure.
+
+2. **The GPTQ → in-place fallback path crashes at save.** GPTQ at fx-trace failure registers `weight_scale` Parameter slots on each Linear before crashing. QuantizationModifier-on-the-same-model writes those slots in a way inconsistent with `accelerate`'s offload tracking (we use `device_map="auto"`). At save, llmcompressor's `from_accelerate` cleanup hits a `TypeError`: it tries to `setattr(module, 'weight_scale', tensor)` but the Parameter slot rejects a raw Tensor. The original design also called for a "fresh rebuild" between attempts — that's infeasible on L4 24 GB because the bf16 model fills ~15 GiB and `del + gc + empty_cache` doesn't reliably release VRAM (the llmcompressor session retains submodule back-refs).
+
+**What shipped instead:**
+
+- Default path: `QuantizationModifier` (observer-only). The proven-working path on Gemma 4 E-variants, and also the closer match to cyankiwi's published config (`actorder: null`, no Hessian fingerprint in `config_groups`).
+- `--try-gptq` opt-in flag for `GPTQModifier`. Failure under this flag is **terminal** — no automatic fallback, error message points to re-running without the flag.
+- `_run_gptq`, `_is_known_e_variant_failure`, and the marker substrings are left in place behind the opt-in flag for future llmcompressor / transformers fixes where GPTQ on Gemma 4 E becomes viable.
+
+**Why this is acceptable:** cyankiwi's published config has no GPTQ fingerprint either. Observer-only is the more faithful replica of their recipe. The script still hits its primary goal: produce a calibrated W4A16 checkpoint with the cyankiwi knob set (group_size=32, observer=mse, asymmetric) so the retention edge can be ablated.
+
+**Open follow-ups:**
+
+- If we ever want GPTQ to work on Gemma 4 E (e.g., to compare GPTQ vs observer-only as a knob), the structural fix is to drop `device_map="auto"` and load single-device. The model fits on L4 24 GB without offloading (LM 16 + vision 0.8 + audio 0.3 ≈ 17 GB). No `accelerate` hooks → no `from_accelerate` cleanup → no Parameter/Tensor type clash. Not shipped here because (a) the proven path works, (b) the eval ablation doesn't require GPTQ.
