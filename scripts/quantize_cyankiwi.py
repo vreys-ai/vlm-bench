@@ -1,12 +1,13 @@
-"""Sibling of quantize_fp8.py producing a W4A16 (data-free RTN) checkpoint.
+"""Produces a calibrated W4A16 checkpoint matching the cyankiwi
+gemma-4-E4B-it-AWQ-INT4 community artifact's observable config.
 
-Why a separate script instead of a CLI flag on quantize_fp8.py:
-    Each scheme is its own provenance trail. Keeping fp8 and w4a16 as two
-    explicit scripts makes the artifact lineage in `quant_recipe.json`
-    self-describing and lets us compare the two schemes' calls side-by-side
-    at a glance. The two files differ only in SCHEME, the output-dir
-    convention, and the section of the docstring explaining *why* this
-    scheme was chosen.
+Sibling of quantize_fp8.py (FP8_BLOCK via model_free_ptq) and
+quantize_w4a16.py (data-free RTN W4A16 via model_free_ptq). Each
+quantization scheme is its own script for the same reason as those
+two: each is a distinct provenance trail with a distinct `quant_recipe.json`
+and a distinct set of failure modes. cyankiwi uses oneshot + calibration
+(not model_free_ptq), so the entire pipeline differs from the other two —
+see "Why oneshot + calibration" below.
 
 Why W4A16 (vs the FP8_BLOCK that quantize_fp8.py produces):
     HF transformers + compressed-tensors 0.14 has no packed-fp8 forward
@@ -401,6 +402,13 @@ def _patch_transformers_torch_init_functions() -> None:
     }
 
 
+# NOTE: kept but uncalled. The oneshot path saves the multimodal aux
+# files via `processor.save_pretrained(output_dir)` in
+# _save_artifact_and_recipe, which writes preprocessor_config.json
+# (image processor), chat_template.jinja, and tokenizer files. The
+# model_free_ptq sibling (scripts/quantize_w4a16.py) still needs this
+# helper because it never instantiates a Processor object. Left here for
+# reference and for any future model_free_ptq fallback path.
 def _pull_processor_aux_files(model_id: str, output_dir: Path) -> None:
     """Copy multimodal processor configs from the source repo into the save
     dir. `model_free_ptq` propagates `config.json`, `tokenizer.*`,
@@ -498,54 +506,47 @@ def main() -> None:
     # dropped.
     _patch_transformers_torch_init_functions()
 
-    from llmcompressor import model_free_ptq
-
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    repo_root = Path(__file__).resolve().parent.parent
 
-    # [1/3] Auth preflight.
-    logger.info("[1/3] Verifying HF auth ...")
+    # [1/5] Auth preflight.
+    logger.info("[1/5] Verifying HF auth ...")
     _check_auth(args.model_id)
 
-    # [2/3] Run model-free PTQ. This downloads the safetensors shards (if
-    # not already cached), quantizes weights per-tensor on `device`, and
-    # writes new safetensors to `save_directory`. No PyTorch model is
-    # ever instantiated and no forward pass runs. W4A16 is data-free RTN:
-    # group-wise int4 weights, bf16 activations at inference (the "A16"),
-    # no calibration set required.
-    logger.info("[2/3] Running model_free_ptq (scheme=%s) on %s -> %s",
-                SCHEME, args.model_id, args.output_dir)
-    model_free_ptq(
-        model_stub=args.model_id,
-        save_directory=str(args.output_dir),
-        scheme=SCHEME,
-        ignore=IGNORE,
-        max_workers=args.max_workers,
-        device=args.device,
-    )
+    # [2/5] Load model + processor + calibration dataset.
+    logger.info("[2/5] Loading model + processor + calibration dataset ...")
+    model = _load_model(args)
+    processor = _load_processor(args)
+    calib_ds = _build_calibration_dataset(args, processor)
 
-    # [3/3] Pull the multimodal-processor aux files that model_free_ptq
-    # doesn't propagate. Without them, AutoProcessor.from_pretrained on the
-    # save dir falls through to a Hub call with the local path as repo_id
-    # and crashes with HFValidationError. Fetch them once now so the saved
-    # checkpoint is self-contained for downstream load. Files are tiny
-    # (KB-range) and snapshot_download is no-op-fast for ones already in
-    # the HF cache from step [2/3].
-    logger.info("[3/3] Adding multimodal processor aux files to %s", args.output_dir)
-    _pull_processor_aux_files(args.model_id, args.output_dir)
+    # [3/5] Try GPTQModifier first (high-quality Hessian path), fall back
+    # to QuantizationModifier (observer-only) on the known Gemma 4
+    # E-variant failure modes — see _is_known_e_variant_failure for the
+    # marker list and reference_llmcompressor_entrypoints memory note for
+    # the underlying architecture reasons.
+    if args.skip_gptq:
+        logger.info("[3/5] --skip-gptq set — going straight to observer-only")
+        model, entrypoint_used = _run_observer_only(calib_ds, args)
+    else:
+        logger.info("[3/5] Running GPTQModifier oneshot ...")
+        import torch.fx
+        try:
+            entrypoint_used = _run_gptq(model, calib_ds, args)
+        except (torch.fx.proxy.TraceError, RuntimeError, AttributeError) as e:
+            if not _is_known_e_variant_failure(e):
+                raise
+            logger.warning(
+                "GPTQModifier failed on E-variant (%s: %s) — retrying observer-only",
+                type(e).__name__, str(e)[:200],
+            )
+            model, entrypoint_used = _run_observer_only(calib_ds, args)
 
-    recipe_payload = {
-        "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "git_sha": _git_sha(repo_root),
-        "model_id": args.model_id,
-        "scheme": SCHEME,
-        "ignore_patterns": IGNORE,
-        "entrypoint": "llmcompressor.model_free_ptq",
-        "based_on": "examples/model_free_ptq/gemma4_fp8_block.py @ vllm-project/llm-compressor (scheme swapped FP8_BLOCK -> W4A16)",
-    }
-    with (args.output_dir / "quant_recipe.json").open("w") as f:
-        json.dump(recipe_payload, f, indent=2)
-    logger.info("Done. Quantized checkpoint + quant_recipe.json written to %s", args.output_dir)
+    # [4/5] Save the compressed checkpoint + processor + provenance.
+    logger.info("[4/5] Saving compressed checkpoint and provenance ...")
+    _save_artifact_and_recipe(model, processor, args, entrypoint_used=entrypoint_used)
+
+    # [5/5] Done.
+    logger.info("[5/5] Done. Entrypoint used: %s", entrypoint_used)
+    logger.info("       Output: %s", args.output_dir)
 
 
 if __name__ == "__main__":
