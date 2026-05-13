@@ -317,16 +317,29 @@ def _run_gptq(model, calib_ds, args: argparse.Namespace) -> str:
     return "llmcompressor.oneshot+GPTQModifier"
 
 
-def _run_observer_only(calib_ds, args: argparse.Namespace):
-    """Fallback path. Rebuilds the model fresh (GPTQ may have partially
-    mutated weights before crashing), then runs QuantizationModifier
-    oneshot — no Hessian, just observer-fitted scales from calibration
-    activations. Returns (model, entrypoint_string)."""
+def _run_observer_only(model, calib_ds, args: argparse.Namespace):
+    """Fallback path. Runs QuantizationModifier oneshot on the caller's
+    model in place — no Hessian, just observer-fitted scales from
+    calibration activations. Returns (model, entrypoint_string).
+
+    Why in-place (not a fresh rebuild as the spec originally called for):
+    on L4 24 GB the bf16 model fills ~15 GiB. Loading a second copy
+    doesn't fit, and `del model; gc.collect(); torch.cuda.empty_cache()`
+    after a failed GPTQ run does not reliably release VRAM — the
+    llmcompressor session retains back-refs to module submodules via
+    instrumentation hooks the failed modifier registered, so the GC
+    doesn't see the model as garbage.
+
+    Safety of in-place reuse: at every marker-matched GPTQ failure point
+    (fx TraceError, num_kv_shared_layers, sequential pipeline state),
+    the crash happens before the modifier's `execute()` phase runs — no
+    weights have been quantized or mutated. The model's bf16 weights
+    are still pristine. `oneshot()` calls `session.reset()` as its
+    first step, which clears any hooks GPTQ-attempt-1 left behind
+    before QuantizationModifier-attempt-2 initializes. Verified on
+    Gemma 4 E-variants 2026-05-13."""
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import QuantizationModifier
-
-    logger.info("Rebuilding model fresh before observer-only fallback")
-    model = _load_model(args)
 
     recipe = QuantizationModifier(
         config_groups=_config_groups_from_args(args),
@@ -545,11 +558,9 @@ def main() -> None:
     # the underlying architecture reasons.
     if args.skip_gptq:
         logger.info("[3/5] --skip-gptq set — going straight to observer-only")
-        model, entrypoint_used = _run_observer_only(calib_ds, args)
+        model, entrypoint_used = _run_observer_only(model, calib_ds, args)
     else:
         logger.info("[3/5] Running GPTQModifier oneshot ...")
-        import gc
-        import torch
         import torch.fx
         try:
             entrypoint_used = _run_gptq(model, calib_ds, args)
@@ -557,21 +568,16 @@ def main() -> None:
             if not _is_known_e_variant_failure(e):
                 raise
             logger.warning(
-                "GPTQModifier failed on E-variant (%s: %s) — retrying observer-only",
+                "GPTQModifier failed on E-variant (%s: %s) — retrying observer-only in place",
                 type(e).__name__, str(e)[:200],
             )
-            # Free the failed-GPTQ model's VRAM before _run_observer_only
-            # reloads a fresh model. On L4 24 GB the old bf16 model occupies
-            # ~15 GiB; transformers' `caching_allocator_warmup` at load time
-            # pre-allocates the full byte budget contiguously and OOMs if
-            # the old model is still resident. `del` drops main's last
-            # Python ref, `gc.collect` walks cycles (modifier internals may
-            # hold back-refs), and `empty_cache` returns the bytes to the
-            # device pool so from_pretrained sees ~22 GiB free again.
-            del model
-            gc.collect()
-            torch.cuda.empty_cache()
-            model, entrypoint_used = _run_observer_only(calib_ds, args)
+            # No rebuild: at every marker-matched failure point GPTQ
+            # crashes before its execute() phase runs, so the model's
+            # bf16 weights are still pristine. oneshot's session.reset()
+            # clears any hooks the failed GPTQModifier left behind before
+            # QuantizationModifier initializes. See _run_observer_only's
+            # docstring for the safety argument and the L4 budget reason.
+            model, entrypoint_used = _run_observer_only(model, calib_ds, args)
 
     # [4/5] Save the compressed checkpoint + processor + provenance.
     logger.info("[4/5] Saving compressed checkpoint and provenance ...")
