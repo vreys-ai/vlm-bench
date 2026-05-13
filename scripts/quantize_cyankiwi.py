@@ -259,6 +259,42 @@ def _build_calibration_dataset(args: argparse.Namespace, processor):
     return raw.map(_format, remove_columns=raw.column_names)
 
 
+def _scheme_kwargs_from_args(args: argparse.Namespace) -> dict:
+    """Materialize SCHEME_KWARGS with the CLI-overridable knobs filled in."""
+    return dict(
+        num_bits=4,
+        group_size=args.group_size,
+        strategy="group",
+        symmetric=args.symmetric,
+        observer=args.observer,
+        actorder=None,
+        dynamic=False,
+    )
+
+
+def _run_gptq(model, calib_ds, args: argparse.Namespace) -> str:
+    """Run GPTQModifier oneshot. Mutates `model` in place; returns the
+    entrypoint string for the recipe payload."""
+    from llmcompressor import oneshot
+    from llmcompressor.modifiers.quantization import GPTQModifier
+
+    recipe = GPTQModifier(
+        targets=TARGETS,
+        ignore=IGNORE,
+        scheme=_scheme_kwargs_from_args(args),
+        block_size=args.gptq_block_size,
+        dampening_frac=args.gptq_dampening_frac,
+    )
+    oneshot(
+        model=model,
+        dataset=calib_ds,
+        recipe=recipe,
+        max_seq_length=args.max_seq_length,
+        num_calibration_samples=args.num_calibration_samples,
+    )
+    return "llmcompressor.oneshot+GPTQModifier"
+
+
 def _git_sha(repo_root: Path) -> str:
     try:
         return subprocess.check_output(
