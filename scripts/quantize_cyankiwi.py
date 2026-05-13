@@ -33,12 +33,12 @@ Why oneshot + calibration (vs the model_free_ptq path in quantize_w4a16.py):
     explanation for cyankiwi's 0.978 retention edge over the Vishva007
     GPTQ W4A16 (0.835) on the same model.
 
-    Trade-off: oneshot requires a full PyTorch forward pass, which means
-    we hit the per-layer-embeddings + KV-sharing failure mode that
-    model_free_ptq sidesteps (see reference_llmcompressor_entrypoints
-    memory note). Mitigation: GPTQModifier → QuantizationModifier
-    fallback on the known marker exceptions. Both paths produce the
-    same final config_groups block.
+    Default modifier: QuantizationModifier (observer-only). This is the
+    proven-working path on Gemma 4 E-variants and matches cyankiwi's
+    saved config exactly (`actorder: null`, no Hessian fingerprint in
+    config_groups). The `--try-gptq` flag opts in to GPTQModifier for
+    other models or future llmcompressor versions where the Gemma 4 E
+    fx-trace issue is fixed; on E-variants today, GPTQ fails terminally.
 
 Install on Colab L4 (or any 16+ GB GPU). llmcompressor and
 compressed-tensors must come from git+main:
@@ -526,9 +526,18 @@ def main() -> None:
                         help="Cap on GPU residency to leave headroom for activations on L4 24GB.")
     parser.add_argument("--seed", type=int, default=42,
                         help="Controls calibration shuffle for reproducibility.")
-    parser.add_argument("--skip-gptq", action="store_true",
-                        help="Force the QuantizationModifier path directly. Use when GPTQ "
-                             "is known to fail on this model variant.")
+    parser.add_argument("--try-gptq", action="store_true",
+                        help="Opt in to the GPTQModifier Hessian path. Default is "
+                             "observer-only (QuantizationModifier), which is the "
+                             "proven-working path on Gemma 4 E-variants and also "
+                             "the closer match to cyankiwi's published config "
+                             "(`actorder: null`, no Hessian fingerprint). GPTQ "
+                             "currently fails at fx-trace on Gemma 4 E (PLE + KV-"
+                             "sharing) and the in-place observer-only fallback "
+                             "after a failed GPTQ crashes at save_pretrained due "
+                             "to state contamination between modifiers. When "
+                             "--try-gptq is set, GPTQ failure is terminal — the "
+                             "script does NOT fall back to observer-only.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -551,33 +560,42 @@ def main() -> None:
     processor = _load_processor(args)
     calib_ds = _build_calibration_dataset(args, processor)
 
-    # [3/5] Try GPTQModifier first (high-quality Hessian path), fall back
-    # to QuantizationModifier (observer-only) on the known Gemma 4
-    # E-variant failure modes — see _is_known_e_variant_failure for the
-    # marker list and reference_llmcompressor_entrypoints memory note for
-    # the underlying architecture reasons.
-    if args.skip_gptq:
-        logger.info("[3/5] --skip-gptq set — going straight to observer-only")
-        model, entrypoint_used = _run_observer_only(model, calib_ds, args)
-    else:
-        logger.info("[3/5] Running GPTQModifier oneshot ...")
+    # [3/5] Default path: QuantizationModifier (observer-only). This is
+    # the proven-working path on Gemma 4 E-variants and also the closer
+    # match to cyankiwi's published config (`actorder: null`, no Hessian
+    # fingerprint in the saved config_groups).
+    #
+    # --try-gptq opts in to GPTQModifier. Why we removed the automatic
+    # GPTQ → observer-only fallback that this script originally had:
+    #   1. GPTQ at fx-trace failure registers `weight_scale` Parameter
+    #      slots on Linears before crashing.
+    #   2. The in-place QuantizationModifier run on the same model then
+    #      writes those slots in a way that's inconsistent with
+    #      accelerate's offload tracking.
+    #   3. save_pretrained's from_accelerate cleanup walks every module
+    #      and crashes with a TypeError on `weight_scale` because
+    #      accelerate's stored value is a bare Tensor, not a Parameter.
+    # Net: the GPTQ → fallback path runs calibration to completion and
+    # then loses the artifact at save time. Better to fail fast with a
+    # clear retry message than burn calibration GPU time before losing
+    # the result.
+    if args.try_gptq:
+        logger.info("[3/5] --try-gptq set — running GPTQModifier oneshot ...")
         import torch.fx
         try:
             entrypoint_used = _run_gptq(model, calib_ds, args)
         except (torch.fx.proxy.TraceError, RuntimeError, AttributeError) as e:
-            if not _is_known_e_variant_failure(e):
-                raise
-            logger.warning(
-                "GPTQModifier failed on E-variant (%s: %s) — retrying observer-only in place",
-                type(e).__name__, str(e)[:200],
-            )
-            # No rebuild: at every marker-matched failure point GPTQ
-            # crashes before its execute() phase runs, so the model's
-            # bf16 weights are still pristine. oneshot's session.reset()
-            # clears any hooks the failed GPTQModifier left behind before
-            # QuantizationModifier initializes. See _run_observer_only's
-            # docstring for the safety argument and the L4 budget reason.
-            model, entrypoint_used = _run_observer_only(model, calib_ds, args)
+            if _is_known_e_variant_failure(e):
+                raise RuntimeError(
+                    f"GPTQ failed with a known Gemma 4 E-variant error "
+                    f"({type(e).__name__}: {str(e)[:200]}). Re-run without "
+                    f"--try-gptq for the proven observer-only path."
+                ) from e
+            raise
+    else:
+        logger.info("[3/5] Running QuantizationModifier oneshot (default; "
+                    "pass --try-gptq to opt in to GPTQ Hessian path) ...")
+        model, entrypoint_used = _run_observer_only(model, calib_ds, args)
 
     # [4/5] Save the compressed checkpoint + processor + provenance.
     logger.info("[4/5] Saving compressed checkpoint and provenance ...")
