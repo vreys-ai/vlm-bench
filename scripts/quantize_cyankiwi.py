@@ -321,6 +321,31 @@ def _run_observer_only(calib_ds, args: argparse.Namespace):
     return model, "llmcompressor.oneshot+QuantizationModifier"
 
 
+def _save_artifact_and_recipe(
+    model, processor, args: argparse.Namespace, *, entrypoint_used: str
+) -> None:
+    """Save the quantized model + processor + provenance JSON to
+    args.output_dir. `save_compressed=True` writes packed int4
+    safetensors with the cyankiwi-shaped quantization_config block.
+    `processor.save_pretrained` writes preprocessor_config.json,
+    chat_template.jinja, and tokenizer files — which is why the older
+    `_pull_processor_aux_files` helper is no longer called."""
+    repo_root = Path(__file__).resolve().parent.parent
+
+    logger.info("Saving compressed checkpoint to %s", args.output_dir)
+    model.save_pretrained(str(args.output_dir), save_compressed=True)
+    processor.save_pretrained(str(args.output_dir))
+
+    payload = _build_recipe_payload(
+        args=args,
+        entrypoint_used=entrypoint_used,
+        git_sha=_git_sha(repo_root),
+    )
+    with (args.output_dir / "quant_recipe.json").open("w") as f:
+        json.dump(payload, f, indent=2)
+    logger.info("Wrote provenance to %s/quant_recipe.json", args.output_dir)
+
+
 def _git_sha(repo_root: Path) -> str:
     try:
         return subprocess.check_output(
