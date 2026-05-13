@@ -40,16 +40,34 @@ Why oneshot + calibration (vs the model_free_ptq path in quantize_w4a16.py):
     other models or future llmcompressor versions where the Gemma 4 E
     fx-trace issue is fixed; on E-variants today, GPTQ fails terminally.
 
-Install on Colab L4 (or any 16+ GB GPU). llmcompressor and
-compressed-tensors must come from git+main:
+Install on Colab L4 (or any 16+ GB GPU). Verified-working install
+sequence as of 2026-05-13:
 
     pip install -q uv
-    echo "transformers>=5.5,<6" > /tmp/overrides.txt
-    uv pip install --system --override /tmp/overrides.txt \\
-        "llm-bench-cc[quant] @ git+<your-repo-url>"
-    uv pip install --system --override /tmp/overrides.txt \\
-        "compressed-tensors @ git+https://github.com/neuralmagic/compressed-tensors.git" \\
+
+    # 1. transformers override file. llmcompressor pulls in an older
+    #    transformers pin transitively; we need >=5.5 for the Gemma 4
+    #    config schema.
+    echo "transformers>=5.5,<6" > /tmp/transformers_override.txt
+
+    # 2. This repo, plus its [quant] extras. After merge replace the
+    #    branch ref with `main`.
+    uv pip install --system --override /tmp/transformers_override.txt \\
+        "llm-bench-cc[quant] @ git+https://github.com/vreys-ai/vlm-bench@feature/quantize-cyankiwi"
+
+    # 3. llmcompressor at HEAD. Its current main expects a private
+    #    `_match_name` symbol that PyPI compressed-tensors doesn't yet
+    #    export — see the next step for the workaround.
+    uv pip install --system --override /tmp/transformers_override.txt \\
         "llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git"
+
+    # 4. Pin compressed-tensors to the exact alpha that has `_match_name`,
+    #    delivered transitively via vllm (vllm depends on compressed-
+    #    tensors and honors the override pin at install time). Without
+    #    this, llmcompressor's `from compressed_tensors.utils.match import
+    #    _match_name` fails on import.
+    echo "compressed-tensors==0.15.1a20260503" > /tmp/compressed-tensors_override.txt
+    uv pip install --system --override /tmp/compressed-tensors_override.txt vllm
 
 Run:
     huggingface-cli login          # not required (E4B-it is public) but
