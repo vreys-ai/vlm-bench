@@ -227,6 +227,38 @@ def _load_processor(args: argparse.Namespace):
     return AutoProcessor.from_pretrained(args.model_id)
 
 
+def _build_calibration_dataset(args: argparse.Namespace, processor):
+    """Load + shuffle + select + chat-template-format the calibration set.
+
+    Returns a HF Dataset of dicts with a single `text` key. `oneshot`
+    takes this directly via its `dataset=` arg; it handles tokenization
+    and packing internally."""
+    from datasets import load_dataset
+
+    logger.info("Loading calibration dataset %s split=%s",
+                args.calibration_dataset, args.calibration_split)
+    raw = load_dataset(args.calibration_dataset, split=args.calibration_split)
+
+    text_column, needs_template = _pick_calibration_column(list(raw.column_names))
+    logger.info("Picked calibration column %r (chat-template=%s)",
+                text_column, needs_template)
+
+    raw = raw.shuffle(seed=args.seed).select(range(args.num_calibration_samples))
+
+    tokenizer = processor.tokenizer
+
+    def _format(example):
+        text = example[text_column]
+        if needs_template:
+            text = tokenizer.apply_chat_template(
+                [{"role": "user", "content": text}],
+                tokenize=False, add_generation_prompt=False,
+            )
+        return {"text": text}
+
+    return raw.map(_format, remove_columns=raw.column_names)
+
+
 def _git_sha(repo_root: Path) -> str:
     try:
         return subprocess.check_output(
