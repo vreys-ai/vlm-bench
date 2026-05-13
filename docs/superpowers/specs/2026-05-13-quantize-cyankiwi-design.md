@@ -229,3 +229,21 @@ The original design specified an automatic `GPTQModifier → QuantizationModifie
 **Open follow-ups:**
 
 - If we ever want GPTQ to work on Gemma 4 E (e.g., to compare GPTQ vs observer-only as a knob), the structural fix is to drop `device_map="auto"` and load single-device. The model fits on L4 24 GB without offloading (LM 16 + vision 0.8 + audio 0.3 ≈ 17 GB). No `accelerate` hooks → no `from_accelerate` cleanup → no Parameter/Tensor type clash. Not shipped here because (a) the proven path works, (b) the eval ablation doesn't require GPTQ.
+
+## Eval result (2026-05-13)
+
+The script produced two W4A16 artifacts that were eval'd at the standard tier (N=200/task, vLLM bf16 baseline). Wandb runs:
+
+| Run | Calibration | Composite | caption | ocr | docvqa | chart |
+|---|---|---|---|---|---|---|
+| `w4a16-vllm-homebrew-standard-20260513-144523` | `garage-bAInd/Open-Platypus` 128×2048 | **0.940** | 0.965 | 0.926 | 0.974 | 0.895 |
+| `w4a16-vllm-homebrew-cyan-cal-standard-20260513-150846` | `cyankiwi/calibration` 128×2048 | **0.939** | 0.961 | 0.927 | 0.967 | 0.902 |
+| `w4a16-vllm` cyankiwi community ckpt (reference) | their AWQ pipeline | **0.978** | 1.011 | 0.993 | 0.983 | 0.937 |
+
+**What this answers from the spec's "Motivation":**
+
+1. **Calibration set choice has negligible composite effect** (Δ=0.0007 between open-platypus and cyankiwi's own dataset). The flag is still useful for ablations, but the *default* doesn't matter much.
+2. **Recipe knobs (g=32, mse observer, asymmetric) explain ~96% of cyankiwi's retention edge over Vishva007 GPTQ.** The remaining 4-point gap is the AWQ smoothing effect on top of the shared knobs. Per-task: docvqa (+0.009) is essentially explained by knobs alone; ocr (+0.067) and chart (+0.042) are where AWQ smoothing earns its keep.
+3. **Verdict on the original question**: cyankiwi's retention edge is *mostly* recipe knobs, with AWQ smoothing as a meaningful-but-small refinement. The Vishva007 0.835 ≪ cyankiwi 0.978 gap is dominated by recipe choices (PLE-per-layer-quantization + gs=128 sym vs PLE-preserved + gs=32 asym), not the GPTQ-vs-AWQ modifier distinction.
+
+Memory updated: `[[project_stage1_state]]` carries both homebrew entries in the vLLM-track candidate list; matrix W4A16 row notes both checkpoints.
