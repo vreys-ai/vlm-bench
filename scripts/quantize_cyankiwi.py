@@ -76,7 +76,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-logger = logging.getLogger("quantize_w4a16")
+logger = logging.getLogger("quantize_cyankiwi")
 
 # Scheme + ignore patterns. Matches cyankiwi/gemma-4-E4B-it-AWQ-INT4's
 # `quantization_config.weights` block byte-for-byte:
@@ -548,6 +548,8 @@ def main() -> None:
         model, entrypoint_used = _run_observer_only(calib_ds, args)
     else:
         logger.info("[3/5] Running GPTQModifier oneshot ...")
+        import gc
+        import torch
         import torch.fx
         try:
             entrypoint_used = _run_gptq(model, calib_ds, args)
@@ -558,6 +560,17 @@ def main() -> None:
                 "GPTQModifier failed on E-variant (%s: %s) — retrying observer-only",
                 type(e).__name__, str(e)[:200],
             )
+            # Free the failed-GPTQ model's VRAM before _run_observer_only
+            # reloads a fresh model. On L4 24 GB the old bf16 model occupies
+            # ~15 GiB; transformers' `caching_allocator_warmup` at load time
+            # pre-allocates the full byte budget contiguously and OOMs if
+            # the old model is still resident. `del` drops main's last
+            # Python ref, `gc.collect` walks cycles (modifier internals may
+            # hold back-refs), and `empty_cache` returns the bytes to the
+            # device pool so from_pretrained sees ~22 GiB free again.
+            del model
+            gc.collect()
+            torch.cuda.empty_cache()
             model, entrypoint_used = _run_observer_only(calib_ds, args)
 
     # [4/5] Save the compressed checkpoint + processor + provenance.
