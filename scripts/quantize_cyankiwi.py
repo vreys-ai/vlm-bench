@@ -295,6 +295,32 @@ def _run_gptq(model, calib_ds, args: argparse.Namespace) -> str:
     return "llmcompressor.oneshot+GPTQModifier"
 
 
+def _run_observer_only(calib_ds, args: argparse.Namespace):
+    """Fallback path. Rebuilds the model fresh (GPTQ may have partially
+    mutated weights before crashing), then runs QuantizationModifier
+    oneshot — no Hessian, just observer-fitted scales from calibration
+    activations. Returns (model, entrypoint_string)."""
+    from llmcompressor import oneshot
+    from llmcompressor.modifiers.quantization import QuantizationModifier
+
+    logger.info("Rebuilding model fresh before observer-only fallback")
+    model = _load_model(args)
+
+    recipe = QuantizationModifier(
+        targets=TARGETS,
+        ignore=IGNORE,
+        scheme=_scheme_kwargs_from_args(args),
+    )
+    oneshot(
+        model=model,
+        dataset=calib_ds,
+        recipe=recipe,
+        max_seq_length=args.max_seq_length,
+        num_calibration_samples=args.num_calibration_samples,
+    )
+    return model, "llmcompressor.oneshot+QuantizationModifier"
+
+
 def _git_sha(repo_root: Path) -> str:
     try:
         return subprocess.check_output(
