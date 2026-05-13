@@ -260,17 +260,39 @@ def _build_calibration_dataset(args: argparse.Namespace, processor):
     return raw.map(_format, remove_columns=raw.column_names)
 
 
-def _scheme_kwargs_from_args(args: argparse.Namespace) -> dict:
-    """Materialize SCHEME_KWARGS with the CLI-overridable knobs filled in."""
-    return dict(
-        num_bits=4,
-        group_size=args.group_size,
-        strategy="group",
-        symmetric=args.symmetric,
-        observer=args.observer,
-        actorder=None,
-        dynamic=False,
-    )
+def _config_groups_from_args(args: argparse.Namespace) -> dict:
+    """Build a `config_groups` dict for GPTQModifier / QuantizationModifier.
+
+    Why `config_groups=` instead of `scheme=`: GPTQModifier's `scheme=`
+    parameter validates as either a preset name string ("W4A16") or a
+    `{preset_name: targets}` dict — it rejects custom QuantizationArgs
+    dicts at runtime (`Value error, scheme must either be a preset scheme
+    name or a dictionary of preset scheme names`). Since we need
+    non-default knobs (group_size=32, observer="mse", asymmetric), the
+    `config_groups` parameter is the unambiguous path: it takes
+    `{group_name: QuantizationScheme}` with explicit weights args. This
+    also matches cyankiwi's saved config.json structure byte-for-byte
+    (their `quantization_config.config_groups.group_0`).
+
+    `targets` lives inside each scheme when using `config_groups`, not at
+    the modifier level."""
+    return {
+        "group_0": {
+            "targets": TARGETS,
+            "weights": {
+                "num_bits": 4,
+                "type": "int",
+                "symmetric": args.symmetric,
+                "strategy": "group",
+                "group_size": args.group_size,
+                "observer": args.observer,
+                "actorder": None,
+                "dynamic": False,
+            },
+            "input_activations": None,
+            "output_activations": None,
+        }
+    }
 
 
 def _run_gptq(model, calib_ds, args: argparse.Namespace) -> str:
@@ -280,9 +302,8 @@ def _run_gptq(model, calib_ds, args: argparse.Namespace) -> str:
     from llmcompressor.modifiers.quantization import GPTQModifier
 
     recipe = GPTQModifier(
-        targets=TARGETS,
+        config_groups=_config_groups_from_args(args),
         ignore=IGNORE,
-        scheme=_scheme_kwargs_from_args(args),
         block_size=args.gptq_block_size,
         dampening_frac=args.gptq_dampening_frac,
     )
@@ -308,9 +329,8 @@ def _run_observer_only(calib_ds, args: argparse.Namespace):
     model = _load_model(args)
 
     recipe = QuantizationModifier(
-        targets=TARGETS,
+        config_groups=_config_groups_from_args(args),
         ignore=IGNORE,
-        scheme=_scheme_kwargs_from_args(args),
     )
     oneshot(
         model=model,
