@@ -133,6 +133,36 @@ def _is_known_e_variant_failure(exc: BaseException) -> bool:
     return any(marker in msg for marker in _E_VARIANT_FAILURE_MARKERS)
 
 
+# Calibration datasets in the wild use inconsistent column names.
+# Priority below covers the three column conventions we'll encounter on
+# the Hub: `instruction` (Platypus, Alpaca-likes), `prompt` (UltraChat
+# and most instruct datasets), `text` (raw-text corpora like c4).
+# `instruction` and `prompt` get the chat template applied; `text` is
+# passed through raw.
+_CALIBRATION_COLUMN_PRIORITY = (
+    ("instruction", True),
+    ("prompt", True),
+    ("text", False),
+)
+
+
+def _pick_calibration_column(available_columns: list[str]) -> tuple[str, bool]:
+    """Pick a text column from a HF dataset's schema.
+
+    Returns (column_name, needs_chat_template). Raises ValueError listing
+    both the priority list and the dataset's actual columns if no match.
+    """
+    available = set(available_columns)
+    for col, needs_template in _CALIBRATION_COLUMN_PRIORITY:
+        if col in available:
+            return col, needs_template
+    priority_names = ", ".join(c for c, _ in _CALIBRATION_COLUMN_PRIORITY)
+    raise ValueError(
+        f"Calibration dataset has none of the expected text columns "
+        f"({priority_names}). Available columns: {sorted(available_columns)}."
+    )
+
+
 def _git_sha(repo_root: Path) -> str:
     try:
         return subprocess.check_output(

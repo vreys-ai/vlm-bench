@@ -57,3 +57,39 @@ class TestIsKnownEVariantFailure:
     def test_case_insensitive(self):
         exc = RuntimeError("Per_Layer_Input_Gate not found")
         assert qc._is_known_e_variant_failure(exc) is True
+
+
+class TestPickCalibrationColumn:
+    def test_priority_instruction_first(self):
+        col, needs_template = qc._pick_calibration_column(
+            available_columns=["text", "instruction", "prompt"]
+        )
+        assert col == "instruction"
+        assert needs_template is True
+
+    def test_priority_prompt_over_text(self):
+        col, needs_template = qc._pick_calibration_column(
+            available_columns=["text", "prompt"]
+        )
+        assert col == "prompt"
+        assert needs_template is True
+
+    def test_fallback_text_no_template(self):
+        col, needs_template = qc._pick_calibration_column(
+            available_columns=["text", "metadata"]
+        )
+        assert col == "text"
+        assert needs_template is False
+
+    def test_no_match_raises_with_actual_columns(self):
+        # The error formats `sorted(available_columns)`, so both names appear
+        # but in alphabetical order — match each substring independently
+        # rather than coupling the test to the sort order.
+        with pytest.raises(ValueError) as excinfo:
+            qc._pick_calibration_column(available_columns=["foo", "bar"])
+        assert "foo" in str(excinfo.value)
+        assert "bar" in str(excinfo.value)
+
+    def test_no_match_error_lists_priority(self):
+        with pytest.raises(ValueError, match=r"instruction.*prompt.*text"):
+            qc._pick_calibration_column(available_columns=["foo"])
