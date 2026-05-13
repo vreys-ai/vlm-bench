@@ -312,10 +312,38 @@ def main() -> None:
     parser.add_argument("--model-id", default="google/gemma-4-E4B-it")
     parser.add_argument("--output-dir", required=True, type=Path,
                         help="Where to save the compressed checkpoint (local SSD recommended).")
-    parser.add_argument("--max-workers", type=int, default=8,
-                        help="Parallel safetensors-shard processing workers (upstream default 8).")
-    parser.add_argument("--device", default="cuda:0",
-                        help="Device used to accelerate per-tensor quantization (upstream default cuda:0).")
+    parser.add_argument("--calibration-dataset", default="garage-bAInd/Open-Platypus",
+                        help="HF Hub repo id for the calibration corpus (text-only is fine; "
+                             "vision/audio towers are in IGNORE).")
+    parser.add_argument("--calibration-split", default="train",
+                        help="Dataset split to load (use 'train_sft' for ultrachat_200k, etc.).")
+    parser.add_argument("--num-calibration-samples", type=int, default=128,
+                        help="Smoke-sized default; bump to 512 for the published llmcompressor "
+                             "reference. Drives wall-clock more than any other flag.")
+    parser.add_argument("--max-seq-length", type=int, default=2048,
+                        help="Per-sample token cap during calibration. Matches the "
+                             "llmcompressor INT4 W4A16 example default.")
+    parser.add_argument("--group-size", type=int, default=32,
+                        help="cyankiwi value (default in llmcompressor is 128).")
+    parser.add_argument("--observer", default="mse", choices=["mse", "minmax"],
+                        help="cyankiwi value (default in llmcompressor is minmax).")
+    sym_group = parser.add_mutually_exclusive_group()
+    sym_group.add_argument("--symmetric", dest="symmetric", action="store_true",
+                           help="Use symmetric quantization (cyankiwi is asymmetric).")
+    sym_group.add_argument("--no-symmetric", dest="symmetric", action="store_false",
+                           help="Use asymmetric quantization (cyankiwi value, default).")
+    parser.set_defaults(symmetric=False)
+    parser.add_argument("--gptq-block-size", type=int, default=128,
+                        help="GPTQ Hessian block size (llmcompressor default).")
+    parser.add_argument("--gptq-dampening-frac", type=float, default=0.01,
+                        help="GPTQ Hessian dampening fraction (llmcompressor default).")
+    parser.add_argument("--max-gpu-memory", default="22GiB",
+                        help="Cap on GPU residency to leave headroom for activations on L4 24GB.")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Controls calibration shuffle for reproducibility.")
+    parser.add_argument("--skip-gptq", action="store_true",
+                        help="Force the QuantizationModifier path directly. Use when GPTQ "
+                             "is known to fail on this model variant.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
