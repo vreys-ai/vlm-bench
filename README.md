@@ -146,9 +146,14 @@ The two W4A16 variants both adopt community pre-quantized checkpoints — no own
 
 vLLM's `peak_vram_gb` is the pre-allocated KV-cache pool size (≈ `gpu_memory_utilization × total_VRAM`), not the weight footprint. Quant savings show up only in the startup log line "Model loading took X GiB". Grep there if you need the weights-only number.
 
-### Tier B HF-track (parked)
+### Offline-quantize scripts
 
-`scripts/quantize_fp8.py` and `scripts/quantize_w4a16.py` produce compressed-tensors checkpoints via `llmcompressor.model_free_ptq`. Both are **parked on HF transformers**: FP8_BLOCK loads bf16-at-inference (no fp8 kernels), and W4A16 measured 0.79 smoke / 18.75 GB peak (Marlin overhead exceeded savings on a 5B body). The same FP8_BLOCK checkpoint runs cleanly on vLLM where fp8 kernels engage; the W4A16 path on vLLM uses the cyankiwi community checkpoint instead of our recipe. See `reference_model_free_ptq_dead_end.md` for the full closure rationale.
+Two producer scripts ship for offline checkpoint creation via llmcompressor oneshot:
+
+- `scripts/quantize_w4a16.py` — calibrated W4A16 via `QuantizationModifier`, defaults match the cyankiwi community config (group_size=32, observer=mse, asymmetric). Output loads on both HF transformers (marlin / gptq-marlin kernels) and vLLM (compressed-tensors).
+- `scripts/quantize_dynamic_fp8.py` — data-free FP8_DYNAMIC (static per-channel FP8 weights + dynamic per-token FP8 activations). No calibration set required. Output is a vLLM-runtime story; HF transformers has no eager-mode FP8 kernel.
+
+The earlier `model_free_ptq` producers (FP8_BLOCK + data-free RTN W4A16) were retired — see `reference_model_free_ptq_dead_end.md` for the full closure rationale. FP8_BLOCK in particular is fully superseded: for offline use we have FP8_DYNAMIC, and for the in-flight path see vLLM's [online dynamic quantization](https://docs.vllm.ai/en/latest/features/quantization/fp8/#online-dynamic-quantization).
 
 ## Persistent caches (Drive on Colab)
 

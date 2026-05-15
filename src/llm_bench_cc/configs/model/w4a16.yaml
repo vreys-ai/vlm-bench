@@ -1,9 +1,9 @@
-# W4A16 quantized gemma-4-E4B-it produced offline by scripts/quantize_fp8.py
-# (Neural Magic llmcompressor `model_free_ptq`, compressed-tensors save format,
-# data-free RTN). Routes at inference time through marlin / gptq-marlin kernels
-# bundled in compressed-tensors — packed int4 weights stay in VRAM through the
-# forward pass, unlike FP8_BLOCK which has no eager-mode kernel in this stack
-# and falls back to dequant-on-first-forward (giving zero VRAM win).
+# W4A16 quantized gemma-4-E4B-it produced offline by scripts/quantize_w4a16.py
+# (Neural Magic llmcompressor `oneshot` + `QuantizationModifier`, calibrated
+# with cyankiwi-matching defaults: group_size=32, observer=mse, asymmetric).
+# Routes at inference time through marlin / gptq-marlin kernels bundled in
+# compressed-tensors — packed int4 weights stay in VRAM through the forward
+# pass.
 #
 # This config does NOT trigger quantization at load time — it points at a
 # pre-quantized local checkpoint whose `config.json` carries its own
@@ -20,11 +20,11 @@ defaults:
 name: w4a16
 hf_id: /tmp/llm-bench-cc/quant/gemma-4-E4B-it-W4A16   # local SSD path; override per-VM as needed
 # Processor (tokenizer + image/audio processor + chat template) loads from the
-# upstream Hub repo, not the quantized save dir. `model_free_ptq` doesn't
-# always propagate every multimodal aux file (preprocessor_config.json etc.),
-# and a missing file in the local dir triggers `HFValidationError: Repo id
-# must be in the form 'repo_name'/...` from a fallback Hub call. Pulling the
-# processor from upstream is small, cached, and avoids the issue entirely.
+# upstream Hub repo, not the quantized save dir. The producer script does call
+# `processor.save_pretrained()` so the local dir should be self-contained, but
+# defaulting to upstream is small, cached, and avoids `HFValidationError: Repo
+# id must be in the form 'repo_name'/...` from a fallback Hub call if any aux
+# file is ever missing.
 processor_id: google/gemma-4-E4B-it
 dtype: bfloat16   # compute dtype for activations + unquantized layers (vision/audio/embeds/lm_head). Marlin kernels accept bf16 activations against packed int4 weights.
 

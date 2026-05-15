@@ -3,31 +3,21 @@ oneshot. Data-free: no calibration set, no forward pass for activation
 scales — activations are quantized dynamically per-token at inference,
 weights are quantized statically per-channel from their own values.
 
-Sibling of:
-  - quantize_fp8.py:        FP8_BLOCK via model_free_ptq (static block-FP8
-                            weights, no activation quantization)
-  - quantize_cyankiwi.py:   W4A16 via oneshot + calibration
-                            (int4 weights, bf16 activations, observer-fitted)
-  - quantize_w4a16.py:      W4A16 via model_free_ptq (data-free RTN int4)
+Sibling of quantize_w4a16.py (calibrated W4A16 via oneshot + cyankiwi-
+matching knobs). Both scripts share the same modifier
+(`QuantizationModifier`), the same gemma-4-E IGNORE list, and the same
+install instructions; they differ only in the scheme (FP8_DYNAMIC vs
+W4A16) and in whether calibration data is required (FP8_DYNAMIC does
+not; W4A16 does).
 
-Why FP8_DYNAMIC (vs the FP8_BLOCK that quantize_fp8.py produces):
-    FP8_BLOCK is a weight-only scheme: weights compress to FP8 in blocks,
-    activations stay in bf16, the matmul runs as FP8×bf16. FP8_DYNAMIC is
-    a W8A8 scheme: weights are static per-channel FP8, activations are
-    dynamic per-token FP8 (scales computed at runtime from each batch's
-    activations), and the matmul runs as FP8×FP8 on Ada/Hopper FP8 tensor
-    cores. The two are different points on the speed/accuracy curve —
-    FP8_DYNAMIC trades a small accuracy hit (per-token activation
-    quantization) for a real arithmetic-intensity win at inference.
-
-Why oneshot + QuantizationModifier (vs model_free_ptq):
-    The vLLM FP8 docs prescribe this exact entrypoint
-    (https://docs.vllm.ai/en/latest/features/quantization/fp8/). FP8_DYNAMIC
-    is not a model_free_ptq scheme — model_free_ptq operates on safetensors
-    files and can only emit weight-only quantization metadata. FP8_DYNAMIC
-    needs an `input_activations` block in the saved config so the runtime
-    knows to compute activation scales per-token, which only oneshot
-    produces.
+Why FP8_DYNAMIC:
+    Weights are static per-channel FP8, activations are dynamic per-token
+    FP8 (scales computed at runtime from each batch's activations), and
+    the matmul runs as FP8×FP8 on Ada/Hopper FP8 tensor cores. Contrast
+    with weight-only FP8 schemes (e.g. block-FP8) where activations stay
+    in bf16 and the matmul is FP8×bf16 — those win on memory bandwidth
+    but not on arithmetic intensity. FP8_DYNAMIC trades a small accuracy
+    hit (per-token activation quantization) for the full FP8×FP8 path.
 
 Why no calibration data:
     Weight scales come from the weights themselves (per-channel
@@ -42,7 +32,7 @@ Hardware:
     weights; no calibration forward passes run.
 
 Install on Colab L4 (or any 16+ GB GPU). Same verified-working sequence
-as quantize_cyankiwi.py (2026-05-13):
+as quantize_w4a16.py (2026-05-13):
 
     pip install -q uv
     echo "transformers>=5.5,<6" > /tmp/transformers_override.txt
@@ -83,12 +73,12 @@ logger = logging.getLogger("quantize_dynamic_fp8")
 # (https://docs.vllm.ai/en/latest/features/quantization/fp8/). The preset
 # expands to: weights = static per-channel FP8, activations = dynamic
 # per-token FP8. No need for the config_groups form here (used in
-# quantize_cyankiwi.py for non-default knobs) — the preset is well-defined
+# quantize_w4a16.py for non-default knobs) — the preset is well-defined
 # and matches the saved-config layout vLLM expects at load time.
 SCHEME = "FP8_DYNAMIC"
 TARGETS = ["Linear"]
 
-# Same gemma-4-E-variant-specific ignore set as quantize_cyankiwi.py: the
+# Same gemma-4-E-variant-specific ignore set as quantize_w4a16.py: the
 # vision/audio towers contain non-Linear modules and modality-specific
 # weights we don't want to FP8, and the PLE (per-layer-embedding) bits
 # must stay in bf16 because they're shared across decoder layers in a way

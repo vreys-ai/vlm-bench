@@ -1,4 +1,4 @@
-"""Unit tests for the pure helpers in scripts/quantize_cyankiwi.py.
+"""Unit tests for the pure helpers in scripts/quantize_w4a16.py.
 
 These tests are intentionally narrow: they cover the three pure helpers
 (failure-marker matching, calibration-column detection, recipe-payload
@@ -16,7 +16,7 @@ import pytest
 # Make scripts/ importable as a top-level package for these tests.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-import quantize_cyankiwi as qc  # noqa: E402
+import quantize_w4a16 as qc  # noqa: E402
 
 
 class TestIsKnownEVariantFailure:
